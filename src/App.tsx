@@ -15,8 +15,8 @@ import {
   sendInvoiceWebhook,
   updateOrder,
 } from "./api";
-import { DISCORD_INVITE } from "./discord";
-import { asset, siteOriginPath } from "./paths";
+import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
+import { asset } from "./paths";
 import { loadPaypalSdk } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
@@ -117,6 +117,11 @@ export default function App() {
   useEffect(() => {
     fetchConfig().then(async (cfg) => {
       setConfig(cfg);
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("login") === "1" && !params.get("code") && cfg.discordClientId) {
+        loginWithDiscord(cfg);
+        return;
+      }
       try {
         const logged = await completeDiscordLogin(cfg);
         if (logged) setUser(logged);
@@ -324,7 +329,7 @@ export default function App() {
             <div className="step">
               <b>01</b>
               <h3>Login Discord</h3>
-              <p>Senza account non puoi comprare né vendere. Il tuo profilo resta in alto.</p>
+              <p>Senza account non puoi comprare. Il tuo profilo resta in alto.</p>
             </div>
             <div className="step">
               <b>02</b>
@@ -615,8 +620,8 @@ export default function App() {
                 />
               </label>
               <p style={{ color: "var(--muted)", fontSize: 13 }}>
-                Redirect da mettere nel Developer Portal: <code>{siteOriginPath()}</code>
-                . Attiva anche <b>Public Client</b>.
+                Nel Developer Portal, un solo redirect: <code>{DISCORD_REDIRECT}</code>
+                . Attiva <b>Public Client</b>. È lo stesso bot del sito, non serve altro.
               </p>
               <button className="btn btn-primary">Accedi con Discord</button>
             </form>
@@ -628,14 +633,7 @@ export default function App() {
 }
 
 export function SellPage() {
-  const [config, setConfig] = useState<ShopConfig>({
-    discordClientId: "",
-    discordTicketUrl: "",
-    discordWebhookUrl: "",
-    paypalClientId: "",
-    paypalEmail: "",
-  });
-  const [user, setUser] = useState<DiscordUser | null>(loadUser());
+  const [paypalDefault, setPaypalDefault] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
@@ -644,29 +642,13 @@ export function SellPage() {
   const key = new URLSearchParams(window.location.search).get("key") || "";
 
   useEffect(() => {
-    fetchConfig().then(async (cfg) => {
-      setConfig(cfg);
-      try {
-        const logged = await completeDiscordLogin(cfg);
-        if (logged) setUser(logged);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Login Discord fallito");
-      }
+    fetchConfig().then((cfg) => {
+      if (cfg.paypalEmail.includes("@")) setPaypalDefault(cfg.paypalEmail);
     });
   }, []);
 
-  function goLogin() {
-    loginWithDiscord(config, window.location.href).catch((err) => {
-      setError(err instanceof Error ? err.message : "Login fallito");
-    });
-  }
-
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!user) {
-      goLogin();
-      return;
-    }
     if (!file) {
       setError("Trascina la foto dell'arma");
       return;
@@ -676,8 +658,8 @@ export function SellPage() {
     setOk("");
     const form = new FormData(event.currentTarget);
     form.set("photo", file);
-    form.set("sellerDiscordId", user.id);
-    form.set("sellerName", user.username);
+    form.set("sellerDiscordId", "");
+    form.set("sellerName", "SX");
     try {
       const data = await listItem(form, key);
       setOk(`${data.item.name} è online. Tra un minuto la vedono tutti sul sito pubblico.`);
@@ -704,28 +686,14 @@ export function SellPage() {
               <span>Vendi item</span>
             </span>
           </a>
-          {user ? (
-            <div className="user-chip static">
-              <img src={user.avatar} alt="" />
-              <span>
-                <strong>{user.username}</strong>
-                <small>{user.id}</small>
-              </span>
-            </div>
-          ) : (
-            <button className="btn btn-primary" onClick={goLogin}>
-              Accedi con Discord
-            </button>
-          )}
         </div>
       </header>
       <main className="wrap sell-page">
         <div className="kicker">sell-item.bat · non chiudere la finestra nera</div>
         <h1>Metti in vendita</h1>
         {!key && <p className="err">Apri questa pagina con un doppio clic su sell-item.bat.</p>}
-        {!user && <p className="empty-shop">Devi accedere con Discord prima di pubblicare.</p>}
         {error && <p className="err">{error}</p>}
-        {user && key && (
+        {key && (
           <form className="sell-form" onSubmit={onSubmit}>
             <div
               className={`dropzone ${preview ? "has" : ""}`}
@@ -756,7 +724,7 @@ export function SellPage() {
             </label>
             <label>
               Prezzo euro
-              <input name="price" type="number" min="0.01" step="0.01" required />
+              <input name="price" type="number" min="0.01" step="0.01" required placeholder="es. 4.90" />
             </label>
             <label>
               Value MM2
@@ -764,7 +732,14 @@ export function SellPage() {
             </label>
             <label>
               Tuo PayPal (email)
-              <input name="paypal" type="email" required placeholder="email PayPal dove ricevi i soldi" />
+              <input
+                name="paypal"
+                type="email"
+                required
+                key={paypalDefault}
+                defaultValue={paypalDefault}
+                placeholder="email PayPal dove ricevi i soldi"
+              />
             </label>
             {ok && <p className="ok">{ok}</p>}
             <button className="btn btn-primary" disabled={busy}>

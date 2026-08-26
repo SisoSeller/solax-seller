@@ -1,5 +1,6 @@
 import type { DiscordUser, Order, ShopItem } from "./types";
-import { asset, siteOriginPath } from "./paths";
+import { DISCORD_REDIRECT } from "./discord";
+import { asset } from "./paths";
 
 const USER_KEY = "sx-discord-user";
 const ORDERS_KEY = "sx-orders";
@@ -100,17 +101,20 @@ async function challenge(verifier: string) {
     .replace(/=+$/, "");
 }
 
-export async function loginWithDiscord(config: ShopConfig, next = window.location.href) {
+export async function loginWithDiscord(config: ShopConfig) {
   if (!config.discordClientId) {
     throw new Error("Manca Discord Client ID in shop-config.json");
   }
+  if (!window.location.href.startsWith(DISCORD_REDIRECT)) {
+    window.location.href = `${DISCORD_REDIRECT}?login=1`;
+    return;
+  }
   const verifier = randomVerifier();
   sessionStorage.setItem("sx-pkce", verifier);
-  sessionStorage.setItem("sx-next", next);
   const url = new URL("https://discord.com/oauth2/authorize");
   url.searchParams.set("client_id", config.discordClientId);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("redirect_uri", siteOriginPath());
+  url.searchParams.set("redirect_uri", DISCORD_REDIRECT);
   url.searchParams.set("scope", "identify");
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("code_challenge", await challenge(verifier));
@@ -123,9 +127,7 @@ export async function completeDiscordLogin(config: ShopConfig): Promise<DiscordU
   const code = params.get("code");
   if (!code) return loadUser();
   const verifier = sessionStorage.getItem("sx-pkce");
-  const next = sessionStorage.getItem("sx-next");
   sessionStorage.removeItem("sx-pkce");
-  sessionStorage.removeItem("sx-next");
   if (!verifier || !config.discordClientId) return loadUser();
 
   const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
@@ -135,7 +137,7 @@ export async function completeDiscordLogin(config: ShopConfig): Promise<DiscordU
       client_id: config.discordClientId,
       grant_type: "authorization_code",
       code,
-      redirect_uri: siteOriginPath(),
+      redirect_uri: DISCORD_REDIRECT,
       code_verifier: verifier,
     }),
   });
@@ -160,8 +162,8 @@ export async function completeDiscordLogin(config: ShopConfig): Promise<DiscordU
   const clean = new URL(window.location.href);
   clean.searchParams.delete("code");
   clean.searchParams.delete("state");
+  clean.searchParams.delete("login");
   window.history.replaceState({}, "", clean);
-  if (next && next !== window.location.href) window.location.href = next;
   return user;
 }
 
