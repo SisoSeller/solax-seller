@@ -16,6 +16,7 @@ import {
   updateOrder,
 } from "./api";
 import { DISCORD_INVITE } from "./discord";
+import { asset, siteOriginPath } from "./paths";
 import { loadPaypalSdk } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 

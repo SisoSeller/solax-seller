@@ -22,7 +22,9 @@ export type ShopConfig = {
 async function readJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error("Errore di rete");
-  return res.json() as Promise<T>;
+  const text = (await res.text()).trim();
+  if (!text) throw new Error("File vuoto");
+  return JSON.parse(text) as T;
 }
 
 export async function fetchConfig(): Promise<ShopConfig> {
