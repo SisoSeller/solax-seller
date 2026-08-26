@@ -271,8 +271,8 @@ function PaypalCheckout({
   if (mode === "hosted") {
     return (
       <div className="paypal-hosted">
-        <button type="button" className="paypal-hosted-btn paypal-hosted-gold" onClick={goHosted}>
-          PayPal
+        <button type="button" className="paypal-hosted-btn paypal-hosted-gold" onClick={goHosted} aria-label="PayPal">
+          <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
         </button>
         <button type="button" className="paypal-hosted-btn paypal-hosted-card" onClick={goHosted}>
           Carta di debito o credito

@@ -12,7 +12,7 @@ export default defineConfig({
       "/remove": "http://127.0.0.1:8787",
       "/health": "http://127.0.0.1:8787",
       "/sold": "http://127.0.0.1:8787",
-      "/paypal": "http://127.0.0.1:8787",
+      "/paypal/": "http://127.0.0.1:8787",
     },
   },
   build: {

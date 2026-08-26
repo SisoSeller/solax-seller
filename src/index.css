@@ -885,28 +885,58 @@ a {
   margin-top: 14px;
   min-height: 50px;
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .paypal-hosted-btn {
+  box-sizing: border-box;
   width: 100%;
+  height: 45px;
+  margin: 0;
+  padding: 0 20px;
   border: 0;
   cursor: pointer;
-  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 16px;
-  padding: 14px 16px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  line-height: 1;
+  transition: background-color 0.12s ease;
+}
+
+.paypal-hosted-btn:focus-visible {
+  outline: 3px solid rgba(0, 112, 186, 0.45);
+  outline-offset: 2px;
 }
 
 .paypal-hosted-gold {
   background: #ffc439;
-  color: #111;
-  border-radius: 999px;
+  color: #003087;
+  border-radius: 22.5px;
+}
+
+.paypal-hosted-gold:hover {
+  background: #f2ba36;
+}
+
+.paypal-hosted-logo {
+  display: block;
+  height: 22px;
+  width: auto;
+  pointer-events: none;
 }
 
 .paypal-hosted-card {
   background: #2c2e2f;
   color: #fff;
   border-radius: 4px;
+}
+
+.paypal-hosted-card:hover {
+  background: #3a3c3d;
 }
 
 .paypal-hosted-note {
