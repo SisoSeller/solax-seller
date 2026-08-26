@@ -20,6 +20,7 @@ export type ShopConfig = {
   discordWebhookUrl: string;
   paypalClientId: string;
   paypalEmail: string;
+  paypalApiUrl: string;
 };
 
 async function readJson<T>(url: string): Promise<T> {
@@ -46,6 +47,7 @@ export async function fetchConfig(): Promise<ShopConfig> {
     discordWebhookUrl: "",
     paypalClientId: "",
     paypalEmail: "",
+    paypalApiUrl: "",
   };
   try {
     const file = await readJson<Partial<ShopConfig>>(asset("shop-config.json"));
@@ -277,6 +279,25 @@ export function saveSellKey(key: string) {
 
 export function loadSellKey() {
   return sessionStorage.getItem(SELL_KEY) || "";
+}
+
+const PENDING_PAYPAL = "sx-paypal-pending";
+
+export function savePendingPaypal(order: Order) {
+  sessionStorage.setItem(PENDING_PAYPAL, JSON.stringify(order));
+}
+
+export function loadPendingPaypal(): Order | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_PAYPAL);
+    return raw ? (JSON.parse(raw) as Order) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingPaypal() {
+  sessionStorage.removeItem(PENDING_PAYPAL);
 }
 
 export function rememberSoldIds(ids: string[]) {

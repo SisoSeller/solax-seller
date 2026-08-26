@@ -47,22 +47,16 @@ export function paidCaptureId(details: unknown, expectedEur: number) {
       }
     }
   }
-  if (!captures.length && root.id && root.status) captures.push(root);
+  if (!captures.length) return "";
 
-  const completed =
-    captures.find((capture) => String(capture.status || "").toUpperCase() === "COMPLETED") ||
-    (String(root.status || "").toUpperCase() === "COMPLETED" ? root : undefined);
-  if (!completed) return "";
-
-  const status = String(completed.status || root.status || "").toUpperCase();
-  if (status !== "COMPLETED") return "";
-
-  const id = String(completed.id || root.id || "");
-  if (!id || id.toLowerCase() === "paypal") return "";
+  const completed = captures.find(
+    (capture) => String(capture.status || "").toUpperCase() === "COMPLETED",
+  );
+  if (!completed?.id) return "";
 
   const value = moneyValue(completed) ?? moneyValue(units[0]) ?? moneyValue(root);
-  if (value != null && Math.abs(value - expectedEur) > 0.009) return "";
-  return id;
+  if (value == null || Math.abs(value - expectedEur) > 0.009) return "";
+  return String(completed.id);
 }
 
 type PaypalButtonsApi = {
@@ -143,4 +137,85 @@ export function fundingFor(method: PayMethod) {
 export function landingFor(method: PayMethod) {
   if (method === "card") return "BILLING";
   return "LOGIN";
+}
+
+export function paypalReturnReceipt(params: URLSearchParams, expectedEur: number) {
+  const st = (params.get("st") || params.get("payment_status") || "").trim().toUpperCase();
+  const rawAmt = params.get("amt") || params.get("mc_gross") || "";
+  const amt = Number(String(rawAmt).replace(",", "."));
+  const tx = (params.get("tx") || params.get("txn_id") || "").trim();
+  const invoice = (params.get("invoice") || params.get("item_number") || params.get("cm") || "").trim();
+  if (st && st !== "COMPLETED") {
+    return {
+      ok: false as const,
+      invoice,
+      tx,
+      reason: st === "PENDING" ? "pending" : "failed",
+    };
+  }
+  if (rawAmt && (!Number.isFinite(amt) || Math.abs(amt - expectedEur) > 0.009)) {
+    return { ok: false as const, invoice, tx, reason: "amount" };
+  }
+  return { ok: true as const, invoice, tx, reason: "" };
+}
+
+export function paypalEndpoint(apiUrl: string, path: string) {
+  const base = (apiUrl || "").replace(/\/$/, "");
+  if (base) return `${base}/paypal/${path}`;
+  if (window.location.protocol === "https:") return "";
+  return `/paypal/${path}`;
+}
+
+export async function paypalServerReady(apiUrl: string) {
+  const url = paypalEndpoint(apiUrl, "health");
+  if (!url) return false;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    return Boolean(res.ok && data.ok);
+  } catch {
+    return false;
+  }
+}
+
+export function startPaypalHostedCheckout(opts: {
+  email: string;
+  amount: number;
+  invoice: string;
+  itemName: string;
+  returnUrl: string;
+  cancelUrl: string;
+}) {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = "https://www.paypal.com/cgi-bin/webscr";
+  form.acceptCharset = "UTF-8";
+  const fields: Record<string, string> = {
+    cmd: "_xclick",
+    business: opts.email,
+    item_name: opts.itemName.slice(0, 127),
+    amount: opts.amount.toFixed(2),
+    currency_code: "EUR",
+    no_shipping: "1",
+    no_note: "1",
+    custom: opts.invoice,
+    invoice: opts.invoice,
+    item_number: opts.invoice,
+    return: opts.returnUrl,
+    cancel_return: opts.cancelUrl,
+    cbt: "Torna allo shop SX",
+    rm: "1",
+    charset: "utf-8",
+    lc: "IT",
+    paymentaction: "sale",
+  };
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
 }

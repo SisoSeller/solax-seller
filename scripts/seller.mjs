@@ -4,10 +4,13 @@ import http from "node:http";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import express from "express";
 import multer from "multer";
+import { paypalCaptureOrder, paypalCreateOrder } from "./paypal-orders.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+dotenv.config({ path: path.join(ROOT, ".env") });
 const DATA = path.join(ROOT, "data");
 const LISTINGS_DIR = path.join(ROOT, "public", "listings");
 const LISTINGS_JSON = path.join(ROOT, "public", "listings.json");
@@ -205,6 +208,63 @@ app.post("/sold", (req, res) => {
     res.json({ ok: true, changed });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Errore vendita" });
+  }
+});
+
+function paypalCreds() {
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "public", "shop-config.json"), "utf8"));
+  return {
+    clientId: process.env.PAYPAL_CLIENT_ID || cfg.paypalClientId || "",
+    secret: process.env.PAYPAL_CLIENT_SECRET || "",
+    payee: cfg.paypalEmail || "",
+  };
+}
+
+app.get("/paypal/health", (_req, res) => {
+  const { clientId, secret } = paypalCreds();
+  res.json({ ok: Boolean(clientId && secret) });
+});
+
+app.post("/paypal/create", async (req, res) => {
+  try {
+    const { clientId, secret, payee } = paypalCreds();
+    const amount = Number(req.body?.amount);
+    const invoice = String(req.body?.invoice || "").trim();
+    if (!Number.isFinite(amount) || amount <= 0 || !invoice) {
+      res.status(400).json({ error: "Ordine non valido" });
+      return;
+    }
+    const order = await paypalCreateOrder({
+      clientId,
+      secret,
+      amount,
+      invoice,
+      payee,
+    });
+    res.json({ id: order.id });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "PayPal create fallito" });
+  }
+});
+
+app.post("/paypal/capture", async (req, res) => {
+  try {
+    const { clientId, secret } = paypalCreds();
+    const orderID = String(req.body?.orderID || req.body?.orderId || "").trim();
+    const expectedEur = Number(req.body?.amount);
+    if (!orderID || !Number.isFinite(expectedEur)) {
+      res.status(400).json({ error: "Capture non valido" });
+      return;
+    }
+    const captured = await paypalCaptureOrder({
+      clientId,
+      secret,
+      orderID,
+      expectedEur,
+    });
+    res.json(captured);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "PayPal non ha preso i soldi" });
   }
 });
 
