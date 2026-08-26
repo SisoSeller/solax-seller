@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   EUR,
   VALUE,
@@ -16,13 +16,88 @@ import {
   updateOrder,
 } from "./api";
 import { asset, siteOriginPath } from "./paths";
+import { loadPaypalSdk } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
+
+function payeeEmail(config: ShopConfig, order: Order) {
+  if (config.paypalEmail.includes("@")) return config.paypalEmail;
+  const fromItem = order.items.find((item) => item.paypal.includes("@"));
+  return fromItem?.paypal || "";
+}
+
+function PaypalCheckout({
+  config,
+  order,
+  onPaid,
+  onError,
+}: {
+  config: ShopConfig;
+  order: Order;
+  onPaid: (captureId: string) => void;
+  onError: (message: string) => void;
+}) {
+  const paidRef = useRef(onPaid);
+  const errorRef = useRef(onError);
+  paidRef.current = onPaid;
+  errorRef.current = onError;
+
+  useEffect(() => {
+    if (!config.paypalClientId) return;
+    const host = document.getElementById("paypal-buttons");
+    if (!host) return;
+    host.innerHTML = "";
+    let gone = false;
+    loadPaypalSdk(config.paypalClientId)
+      .then(() => {
+        if (gone || !window.paypal) return;
+        const unit: Record<string, unknown> = {
+          amount: { currency_code: "EUR", value: order.totalEur.toFixed(2) },
+          description: `SX ${order.invoice}`.slice(0, 127),
+          custom_id: order.invoice,
+        };
+        const email = payeeEmail(config, order);
+        if (email) unit.payee = { email_address: email };
+        return window.paypal
+          .Buttons({
+            style: { color: "gold", shape: "pill", label: "paypal" },
+            createOrder: (_data, actions) =>
+              actions.order.create({
+                purchase_units: [unit],
+                application_context: { shipping_preference: "NO_SHIPPING" },
+              }),
+            onApprove: async (_data, actions) => {
+              const details = await actions.order.capture();
+              paidRef.current(details.id || "paypal");
+            },
+            onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
+          })
+          .render("#paypal-buttons");
+      })
+      .catch(() => errorRef.current("Impossibile caricare PayPal."));
+    return () => {
+      gone = true;
+      host.innerHTML = "";
+    };
+  }, [config.paypalClientId, config.paypalEmail, order.invoice, order.totalEur]);
+
+  if (!config.paypalClientId) {
+    return (
+      <p className="err">
+        PayPal non è ancora collegato. Metti <code>paypalClientId</code> e{" "}
+        <code>paypalEmail</code> in shop-config.json.
+      </p>
+    );
+  }
+  return <div id="paypal-buttons" className="paypal-buttons" />;
+}
 
 export default function App() {
   const [config, setConfig] = useState<ShopConfig>({
     discordClientId: "",
     discordTicketUrl: "",
     discordWebhookUrl: "",
+    paypalClientId: "",
+    paypalEmail: "",
   });
   const [user, setUser] = useState<DiscordUser | null>(loadUser());
   const [items, setItems] = useState<ShopItem[]>([]);
@@ -107,7 +182,7 @@ export default function App() {
     setError("");
   }
 
-  async function onPaid() {
+  async function onPaid(paymentNote = note) {
     if (!order || !user) return;
     setBusy(true);
     setError("");
@@ -116,9 +191,9 @@ export default function App() {
         ...order,
         status: "paid",
         paidAt: Date.now(),
-        paymentNote: note,
+        paymentNote,
       };
-      await sendInvoiceWebhook(config, paid, note);
+      await sendInvoiceWebhook(config, paid, paymentNote);
       updateOrder(user, paid);
       setOrder(paid);
       setOrders(loadOrders(user.id));
@@ -258,8 +333,8 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                PayPal: invia i soldi al PayPal del seller. Robux: serve Plus e paghi
-                quello username Roblox.
+                PayPal: paghi con conto o carta, i soldi arrivano subito allo shop.
+                Robux: serve Plus e paghi quello username Roblox.
               </p>
             </div>
             <div className="step">
@@ -463,15 +538,17 @@ export default function App() {
                 <div className="pay-box">
                   {order.method === "paypal" ? (
                     <>
-                      <h3>PayPal</h3>
-                      <p>Manda i soldi a questi account, con causale la fattura:</p>
-                      <ul>
-                        {order.items.map((item) => (
-                          <li key={item.id}>
-                            {item.name}: {item.paypal} — {EUR.format(item.price)}
-                          </li>
-                        ))}
-                      </ul>
+                      <h3>Paga con PayPal o carta</h3>
+                      <p>
+                        I soldi arrivano subito sul PayPal dello shop. Dopo il pagamento
+                        apri il ticket Donazione per la fattura e il trade.
+                      </p>
+                      <PaypalCheckout
+                        config={config}
+                        order={order}
+                        onPaid={(captureId) => onPaid(`PayPal ${captureId}`)}
+                        onError={setError}
+                      />
                     </>
                   ) : (
                     <>
@@ -487,18 +564,22 @@ export default function App() {
                     </>
                   )}
                 </div>
-                <label className="form-label">
-                  ID transazione PayPal o username Roblox da cui hai pagato
-                  <input
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    placeholder="es. ID PayPal o tuo nick Roblox"
-                  />
-                </label>
+                {order.method === "robux" && (
+                  <>
+                    <label className="form-label">
+                      Username Roblox da cui hai pagato
+                      <input
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        placeholder="il tuo nick Roblox"
+                      />
+                    </label>
+                    <button className="btn btn-primary" disabled={busy} onClick={() => onPaid()}>
+                      {busy ? "Verifica in corso..." : "Ho mandato i Robux"}
+                    </button>
+                  </>
+                )}
                 {error && <p className="err">{error}</p>}
-                <button className="btn btn-primary" disabled={busy} onClick={onPaid}>
-                  {busy ? "Verifica in corso..." : "Ho mandato i soldi"}
-                </button>
               </>
             ) : (
               <>
@@ -519,7 +600,7 @@ export default function App() {
                       value={method}
                       onChange={(e) => setMethod(e.target.value as "paypal" | "robux")}
                     >
-                      <option value="paypal">PayPal — manda i soldi al venditore</option>
+                      <option value="paypal">PayPal / carta — pagamento automatico</option>
                       <option value="robux">Robux — serve Plus, paghi quel utente</option>
                     </select>
                   </label>
@@ -574,6 +655,8 @@ export function SellPage() {
     discordClientId: "",
     discordTicketUrl: "",
     discordWebhookUrl: "",
+    paypalClientId: "",
+    paypalEmail: "",
   });
   const [user, setUser] = useState<DiscordUser | null>(loadUser());
   const [file, setFile] = useState<File | null>(null);

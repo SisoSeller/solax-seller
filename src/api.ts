@@ -15,6 +15,8 @@ export type ShopConfig = {
   discordClientId: string;
   discordTicketUrl: string;
   discordWebhookUrl: string;
+  paypalClientId: string;
+  paypalEmail: string;
 };
 
 async function readJson<T>(url: string): Promise<T> {
@@ -24,10 +26,17 @@ async function readJson<T>(url: string): Promise<T> {
 }
 
 export async function fetchConfig(): Promise<ShopConfig> {
+  const empty: ShopConfig = {
+    discordClientId: "",
+    discordTicketUrl: "",
+    discordWebhookUrl: "",
+    paypalClientId: "",
+    paypalEmail: "",
+  };
   try {
-    return await readJson<ShopConfig>(asset("shop-config.json"));
+    return { ...empty, ...(await readJson<Partial<ShopConfig>>(asset("shop-config.json"))) };
   } catch {
-    return { discordClientId: "", discordTicketUrl: "", discordWebhookUrl: "" };
+    return empty;
   }
 }
 

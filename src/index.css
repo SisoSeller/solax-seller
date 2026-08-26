@@ -826,6 +826,11 @@ a {
   margin: 8px 0 14px;
 }
 
+.paypal-buttons {
+  margin-top: 14px;
+  min-height: 50px;
+}
+
 .pay-box {
   background: #0d0b12;
   border-radius: 14px;
