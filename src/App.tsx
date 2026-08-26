@@ -20,7 +20,7 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset } from "./paths";
-import { fundingFor, landingFor, loadPaypalSdk, paypalApi, type PayMethod } from "./paypal";
+import { fundingFor, landingFor, loadPaypalSdk, loadPaypalSaldoSdk, paypalApi, type PayMethod } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 function payeeEmail(config: ShopConfig, order: Order) {
@@ -35,14 +35,30 @@ const PAY_BUTTONS: {
   style: Record<string, string>;
 }[] = [
   { id: "paypal-wallet", method: "paypal", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
+  { id: "paypal-card", method: "card", style: { color: "black", shape: "rect", label: "pay", layout: "vertical" } },
   { id: "paypal-saldo", method: "saldo", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
-  { id: "paypal-card", method: "card", style: { color: "gold", shape: "rect", label: "pay", layout: "vertical" } },
   { id: "paypal-gpay", method: "googlepay", style: { layout: "vertical", shape: "rect", label: "pay" } },
 ];
 
 function hidePaySlot(id: string) {
   const slot = document.querySelector<HTMLElement>(`[data-pay="${id}"]`);
   if (slot) slot.hidden = true;
+}
+
+function renderWithTimeout(render: Promise<void>, ms = 7000) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("timeout")), ms);
+    render.then(
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 function PaypalCheckout({
@@ -76,6 +92,7 @@ function PaypalCheckout({
     loadPaypalSdk(config.paypalClientId)
       .then(async () => {
         if (gone) return;
+        errorRef.current("");
         const unit: Record<string, unknown> = {
           amount: { currency_code: "EUR", value: order.totalEur.toFixed(2) },
           description: `SX ${order.invoice}`.slice(0, 127),
@@ -84,46 +101,60 @@ function PaypalCheckout({
         const email = payeeEmail(config, order);
         if (email) unit.payee = { email_address: email };
         let shown = 0;
-        for (const spec of PAY_BUTTONS) {
+        const renderOne = async (spec: (typeof PAY_BUTTONS)[number]) => {
           if (gone) return;
+          if (spec.method === "saldo") await loadPaypalSaldoSdk(config.paypalClientId);
           const api = paypalApi(spec.method);
           if (!api) {
             hidePaySlot(spec.id);
-            continue;
+            return;
           }
-          const button = api.Buttons({
-            fundingSource: fundingFor(api, spec.method),
-            style: spec.style,
-            createOrder: (_data, actions) =>
-              actions.order.create({
-                purchase_units: [unit],
-                application_context: {
-                  shipping_preference: "NO_SHIPPING",
-                  landing_page: landingFor(spec.method),
-                  user_action: "PAY_NOW",
-                },
-              }),
-            onApprove: async (_data, actions) => {
-              const details = await actions.order.capture();
-              paidRef.current(details.id || "paypal");
-            },
-            onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
-          });
-          if (button.isEligible && !button.isEligible()) {
+          if (spec.method === "googlepay" && !api.FUNDING?.GOOGLEPAY) {
             hidePaySlot(spec.id);
-            continue;
+            return;
           }
           try {
-            await button.render(`#${spec.id}`);
+            const button = api.Buttons({
+              fundingSource: fundingFor(api, spec.method),
+              style: spec.style,
+              createOrder: (_data, actions) =>
+                actions.order.create({
+                  purchase_units: [unit],
+                  application_context: {
+                    shipping_preference: "NO_SHIPPING",
+                    landing_page: landingFor(spec.method),
+                    user_action: "PAY_NOW",
+                  },
+                }),
+              onApprove: async (_data, actions) => {
+                const details = await actions.order.capture();
+                paidRef.current(details.id || "paypal");
+              },
+              onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
+            });
+            await renderWithTimeout(button.render(`#${spec.id}`), spec.method === "card" ? 12000 : 7000);
             shown += 1;
           } catch {
             hidePaySlot(spec.id);
           }
-        }
+        };
+        const paypalBtn = PAY_BUTTONS.find((btn) => btn.method === "paypal");
+        const cardBtn = PAY_BUTTONS.find((btn) => btn.method === "card");
+        const saldoBtn = PAY_BUTTONS.find((btn) => btn.method === "saldo");
+        const gpayBtn = PAY_BUTTONS.find((btn) => btn.method === "googlepay");
+        await Promise.all([paypalBtn && renderOne(paypalBtn), cardBtn && renderOne(cardBtn)]);
+        if (saldoBtn) await renderOne(saldoBtn);
+        if (gpayBtn) await renderOne(gpayBtn);
+        PAY_BUTTONS.forEach((spec) => {
+          const slot = document.querySelector(`[data-pay="${spec.id}"]`);
+          if (slot && slot.querySelectorAll("iframe").length === 0) hidePaySlot(spec.id);
+        });
         if (!gone && shown === 0) errorRef.current("Impossibile caricare PayPal.");
       })
       .catch(() => {
-        if (!gone) errorRef.current("Impossibile caricare PayPal.");
+        if (!gone && document.querySelectorAll(".pay-slot iframe").length === 0) {
+          errorRef.current("Impossibile caricare PayPal.");
+        }
       });
     return () => {
       gone = true;
@@ -146,12 +177,12 @@ function PaypalCheckout({
       <div className="pay-slot" data-pay="paypal-wallet">
         <div id="paypal-wallet" />
       </div>
+      <div className="pay-slot" data-pay="paypal-card">
+        <div id="paypal-card" />
+      </div>
       <div className="pay-slot" data-pay="paypal-saldo">
         <p className="pay-slot-label">PayPal saldo</p>
         <div id="paypal-saldo" />
-      </div>
-      <div className="pay-slot" data-pay="paypal-card">
-        <div id="paypal-card" />
       </div>
       <div className="pay-slot" data-pay="paypal-gpay">
         <div id="paypal-gpay" />
