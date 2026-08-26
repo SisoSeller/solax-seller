@@ -1,20 +1,6 @@
 {
   "items": [
     {
-      "id": "itm-mtakwptp",
-      "name": "test",
-      "price": 0.2,
-      "value": 234,
-      "image": "listings/itm-mtakwptp.png",
-      "paypal": "buzzitest7@gmail.com",
-      "roblox": "",
-      "robuxPrice": 0,
-      "sellerDiscordId": "",
-      "sellerName": "SX",
-      "sold": false,
-      "createdAt": 1787778078398
-    },
-    {
       "id": "itm-mtakjjre",
       "name": "Ice Cream",
       "price": 4.9,
