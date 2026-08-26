@@ -856,42 +856,27 @@ a {
 }
 
 .paypal-buttons {
-  margin-top: 8px;
+  margin-top: 14px;
   min-height: 50px;
-}
-
-.pay-methods {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 12px 0;
+  gap: 10px;
 }
 
-.pay-method {
-  text-align: left;
-  background: #0d0b12;
-  border: 1px solid var(--line);
-  color: var(--text);
-  border-radius: 12px;
-  padding: 10px 12px;
-  cursor: pointer;
-}
-
-.pay-method strong {
-  display: block;
-  font-size: 14px;
-}
-
-.pay-method span {
-  display: block;
-  margin-top: 4px;
+.pay-slot-label {
+  margin: 2px 0 6px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.pay-method.on {
-  border-color: var(--red);
-  background: rgba(123, 77, 255, 0.16);
+.pay-box h3 {
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+
+.pay-box > p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .invoice-code {

@@ -23,26 +23,30 @@ type PaypalButtonsApi = {
 declare global {
   interface Window {
     paypal?: PaypalButtonsApi;
+    paypalSaldo?: PaypalButtonsApi;
   }
 }
 
-function sdkSrc(clientId: string) {
+function sdkSrc(clientId: string, namespace: "paypal" | "paypalSaldo") {
   const params = new URLSearchParams({
     "client-id": clientId,
     currency: "EUR",
     intent: "capture",
     components: "buttons,funding-eligibility",
     "enable-funding": "paypal,card,googlepay",
+    "disable-funding": "paylater,venmo,credit",
   });
+  if (namespace === "paypalSaldo") params.set("locale", "it_IT");
   return `https://www.paypal.com/sdk/js?${params.toString()}`;
 }
 
-export function loadPaypalSdk(clientId: string) {
-  if (window.paypal) return Promise.resolve();
-  const existing = document.querySelector<HTMLScriptElement>("script[data-sx-paypal]");
+function loadOne(clientId: string, namespace: "paypal" | "paypalSaldo") {
+  const ready = () => (namespace === "paypalSaldo" ? window.paypalSaldo : window.paypal);
+  if (ready()) return Promise.resolve();
+  const existing = document.querySelector<HTMLScriptElement>(`script[data-sx-paypal="${namespace}"]`);
   if (existing) {
     return new Promise<void>((resolve, reject) => {
-      if (window.paypal) {
+      if (ready()) {
         resolve();
         return;
       }
@@ -52,17 +56,27 @@ export function loadPaypalSdk(clientId: string) {
   }
   return new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = sdkSrc(clientId);
+    script.src = sdkSrc(clientId, namespace);
     script.async = true;
-    script.dataset.sxPaypal = "1";
+    script.dataset.sxPaypal = namespace;
+    if (namespace !== "paypal") script.dataset.namespace = namespace;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("PayPal SDK non caricato"));
     document.head.appendChild(script);
   });
 }
 
-export function fundingFor(method: PayMethod) {
-  const funding = window.paypal?.FUNDING;
+export function loadPaypalSdk(clientId: string) {
+  return loadOne(clientId, "paypal").then(() => loadOne(clientId, "paypalSaldo").catch(() => undefined));
+}
+
+export function paypalApi(method: PayMethod) {
+  if (method === "saldo") return window.paypalSaldo || window.paypal;
+  return window.paypal;
+}
+
+export function fundingFor(api: PaypalButtonsApi | undefined, method: PayMethod) {
+  const funding = api?.FUNDING;
   if (!funding) return "paypal";
   if (method === "card") return funding.CARD;
   if (method === "googlepay") return funding.GOOGLEPAY || "googlepay";
