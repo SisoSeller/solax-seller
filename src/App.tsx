@@ -20,7 +20,7 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset } from "./paths";
-import { loadPaypalSdk } from "./paypal";
+import { fundingFor, landingFor, loadPaypalSdk, type PayMethod } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 function payeeEmail(config: ShopConfig, order: Order) {
@@ -32,11 +32,13 @@ function payeeEmail(config: ShopConfig, order: Order) {
 function PaypalCheckout({
   config,
   order,
+  method,
   onPaid,
   onError,
 }: {
   config: ShopConfig;
   order: Order;
+  method: PayMethod;
   onPaid: (captureId: string) => void;
   onError: (message: string) => void;
 }) {
@@ -47,14 +49,12 @@ function PaypalCheckout({
 
   useEffect(() => {
     if (!config.paypalClientId) return;
-    const wallet = document.getElementById("paypal-wallet");
-    const card = document.getElementById("paypal-card");
-    if (!wallet || !card) return;
-    wallet.innerHTML = "";
-    card.innerHTML = "";
+    const host = document.getElementById("paypal-slot");
+    if (!host) return;
+    host.innerHTML = "";
     let gone = false;
     loadPaypalSdk(config.paypalClientId)
-      .then(() => {
+      .then(async () => {
         if (gone || !window.paypal) return;
         const unit: Record<string, unknown> = {
           amount: { currency_code: "EUR", value: order.totalEur.toFixed(2) },
@@ -63,71 +63,47 @@ function PaypalCheckout({
         };
         const email = payeeEmail(config, order);
         if (email) unit.payee = { email_address: email };
-        const paypal = window.paypal;
-        if (!paypal) return;
-        const common = {
-          createOrder: (_data: unknown, actions: { order: { create: (body: unknown) => Promise<string> } }) =>
+        const button = window.paypal.Buttons({
+          fundingSource: fundingFor(method),
+          style: {
+            color: "gold",
+            shape: "pill",
+            label: method === "card" ? "pay" : "paypal",
+            layout: "vertical",
+          },
+          createOrder: (_data, actions) =>
             actions.order.create({
               purchase_units: [unit],
               application_context: {
                 shipping_preference: "NO_SHIPPING",
-                landing_page: "LOGIN",
+                landing_page: landingFor(method),
                 user_action: "PAY_NOW",
               },
             }),
-          onApprove: async (
-            _data: unknown,
-            actions: { order: { capture: () => Promise<{ id?: string }> } },
-          ) => {
+          onApprove: async (_data, actions) => {
             const details = await actions.order.capture();
             paidRef.current(details.id || "paypal");
           },
-          onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
-        };
-        const renders: Promise<unknown>[] = [];
-        if (paypal.FUNDING?.PAYPAL) {
-          renders.push(
-            paypal
-              .Buttons({
-                ...common,
-                fundingSource: paypal.FUNDING.PAYPAL,
-                style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" },
-              })
-              .render("#paypal-wallet")
-              .catch(() => undefined),
-          );
+          onError: () => errorRef.current("Pagamento non riuscito. Riprova."),
+        });
+        if (button.isEligible && !button.isEligible()) {
+          errorRef.current("Questo metodo non e disponibile qui. Prova PayPal o carta.");
+          return;
         }
-        if (paypal.FUNDING?.CARD) {
-          renders.push(
-            paypal
-              .Buttons({
-                ...common,
-                fundingSource: paypal.FUNDING.CARD,
-                style: { color: "gold", shape: "rect", label: "pay", layout: "vertical" },
-              })
-              .render("#paypal-card")
-              .catch(() => undefined),
-          );
+        try {
+          await button.render("#paypal-slot");
+        } catch {
+          if (!gone) errorRef.current("Questo metodo non e disponibile qui. Prova PayPal o carta.");
         }
-        if (renders.length === 0) {
-          renders.push(
-            paypal
-              .Buttons({
-                ...common,
-                style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" },
-              })
-              .render("#paypal-wallet"),
-          );
-        }
-        return Promise.all(renders);
       })
-      .catch(() => errorRef.current("Impossibile caricare PayPal."));
+      .catch(() => {
+        if (!gone) errorRef.current("PayPal non si e caricato. Ricarica la pagina.");
+      });
     return () => {
       gone = true;
-      wallet.innerHTML = "";
-      card.innerHTML = "";
+      host.innerHTML = "";
     };
-  }, [config.paypalClientId, config.paypalEmail, order.invoice, order.totalEur]);
+  }, [config.paypalClientId, config.paypalEmail, method, order.invoice, order.totalEur]);
 
   if (!config.paypalClientId) {
     return (
@@ -137,12 +113,7 @@ function PaypalCheckout({
       </p>
     );
   }
-  return (
-    <div className="paypal-buttons">
-      <div id="paypal-wallet" />
-      <div id="paypal-card" />
-    </div>
-  );
+  return <div id="paypal-slot" className="paypal-buttons" />;
 }
 
 export default function App() {
@@ -162,6 +133,7 @@ export default function App() {
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [active, setActive] = useState<ShopItem | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
+  const [payMethod, setPayMethod] = useState<PayMethod>("paypal");
   const [order, setOrder] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -255,6 +227,7 @@ export default function App() {
     setCart([]);
     setCartOpen(false);
     setCheckingOut(true);
+    setPayMethod("paypal");
     setError("");
   }
 
@@ -425,7 +398,7 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                Paghi col saldo PayPal, col conto o con la carta. I soldi arrivano
+                Paghi con PayPal, saldo PayPal, carta o Google Pay. I soldi arrivano
                 subito allo shop.
               </p>
             </div>
@@ -546,7 +519,7 @@ export default function App() {
                     setError("");
                   }}
                 >
-                  <strong>{o.invoice}</strong>
+                  <strong>{o.status === "paid" ? o.invoice : "Da pagare"}</strong>
                   <p>
                     {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)}
                   </p>
@@ -605,33 +578,16 @@ export default function App() {
           <div className="modal">
             {order?.status === "paid" ? (
               <div className="success">
-                <div className="kicker">Pagamento registrato</div>
-                <h2>Fattura inviata su Discord</h2>
+                <div className="kicker">Pagamento ok</div>
+                <h2>La tua fattura</h2>
                 <p style={{ color: "var(--muted)", marginTop: 10 }}>
-                  Tieni il ticket Donazione aperto.
+                  Questo codice è la prova del pagamento. Mandalo nel ticket Discord.
                 </p>
-                <code>{order.invoice}</code>
-                <div style={{ marginTop: 22 }}>
-                  <button className="btn btn-primary" onClick={() => setCheckingOut(false)}>
-                    Torna allo shop
-                  </button>
-                </div>
-              </div>
-            ) : order ? (
-              <>
-                <div className="head-row">
-                  <h2>Paga e apri il ticket</h2>
-                  <button className="close" onClick={() => setCheckingOut(false)}>
-                    ×
-                  </button>
-                </div>
-                <p className="ticket-banner">
-                  Apri il ticket Discord Donazione e richiedi la tua fattura{" "}
-                  <b>{order.invoice}</b>
-                </p>
+                <code className="invoice-code">{order.invoice}</code>
                 {(config.discordTicketUrl || DISCORD_INVITE) && (
                   <a
                     className="btn btn-primary"
+                    style={{ marginTop: 18 }}
                     href={config.discordTicketUrl || DISCORD_INVITE}
                     target="_blank"
                     rel="noreferrer"
@@ -639,15 +595,55 @@ export default function App() {
                     Apri il ticket Discord Donazione
                   </a>
                 )}
+                <div style={{ marginTop: 16 }}>
+                  <button className="btn btn-ghost" onClick={() => setCheckingOut(false)}>
+                    Torna allo shop
+                  </button>
+                </div>
+              </div>
+            ) : order ? (
+              <>
+                <div className="head-row">
+                  <h2>Paga</h2>
+                  <button className="close" onClick={() => setCheckingOut(false)}>
+                    ×
+                  </button>
+                </div>
+                <p>
+                  Totale: <b className="gold">{EUR.format(order.totalEur)}</b>
+                </p>
+                <p style={{ color: "var(--muted)", margin: "8px 0 14px" }}>
+                  I soldi arrivano tutti alla stessa email PayPal dello shop. La fattura
+                  la vedi dopo il pagamento.
+                </p>
+                <div className="pay-methods">
+                  {(
+                    [
+                      ["paypal", "PayPal", "Conto PayPal, anche con carta"],
+                      ["saldo", "PayPal saldo", "Solo saldo, senza carta"],
+                      ["card", "Carta", "Carte bancarie"],
+                      ["googlepay", "Google Pay", "Paga con Google"],
+                    ] as const
+                  ).map(([id, label, hint]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`pay-method ${payMethod === id ? "on" : ""}`}
+                      onClick={() => {
+                        setPayMethod(id);
+                        setError("");
+                      }}
+                    >
+                      <strong>{label}</strong>
+                      <span>{hint}</span>
+                    </button>
+                  ))}
+                </div>
                 <div className="pay-box">
-                  <h3>Paga con PayPal o carta</h3>
-                  <p>
-                    Puoi pagare col saldo PayPal, con il conto, o con la carta. I soldi
-                    arrivano subito allo shop.
-                  </p>
                   <PaypalCheckout
                     config={config}
                     order={order}
+                    method={payMethod}
                     onPaid={(captureId) => onPaid(`PayPal ${captureId}`)}
                     onError={setError}
                   />
