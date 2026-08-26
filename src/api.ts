@@ -249,3 +249,28 @@ export async function listItem(form: FormData, sellKey: string) {
   }
   return data as { item: ShopItem };
 }
+
+const SELL_KEY = "sx-sell-key";
+
+export function saveSellKey(key: string) {
+  if (key) sessionStorage.setItem(SELL_KEY, key);
+}
+
+export function loadSellKey() {
+  return sessionStorage.getItem(SELL_KEY) || "";
+}
+
+export async function removeItem(id: string, sellKey: string) {
+  if (window.location.protocol === "https:") {
+    throw new Error("Apri sell-item.bat sul PC per togliere un item.");
+  }
+  const res = await fetch("/remove", {
+    method: "POST",
+    headers: { "x-sell-key": sellKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((data as { error?: string }).error || "Impossibile togliere l'item");
+  }
+}

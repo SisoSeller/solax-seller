@@ -9,6 +9,7 @@ export default defineConfig({
     host: true,
     proxy: {
       "/publish": "http://127.0.0.1:8787",
+      "/remove": "http://127.0.0.1:8787",
       "/health": "http://127.0.0.1:8787",
     },
   },

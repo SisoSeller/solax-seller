@@ -41,12 +41,13 @@ function gitError(result, fallback) {
   return text || fallback;
 }
 
-function publishToGithub(filename, name) {
-  const files = ["public/listings.json", `public/listings/${filename}`];
-  const add = git(["add", "--", ...files]);
+function pushListings(message) {
+  const add = git(["add", "--", "public/listings.json", "public/listings"]);
   if (add.status !== 0) throw new Error(gitError(add, "git add fallito"));
+  const tracked = git(["add", "-u", "--", "public/listings"]);
+  if (tracked.status !== 0) throw new Error(gitError(tracked, "git add fallito"));
 
-  const commit = git(["commit", "-m", `List ${name}`]);
+  const commit = git(["commit", "-m", message]);
   const commitOut = `${commit.stdout || ""}${commit.stderr || ""}`;
   if (commit.status !== 0 && !commitOut.includes("nothing to commit")) {
     throw new Error(gitError(commit, "git commit fallito"));
@@ -63,8 +64,7 @@ function publishToGithub(filename, name) {
   const push = git(["push", "origin", "HEAD:main"]);
   if (push.status !== 0) {
     throw new Error(
-      gitError(push, "git push fallito") +
-        " — fai login a GitHub e riprova.",
+      gitError(push, "git push fallito") + " — fai login a GitHub e riprova.",
     );
   }
 }
@@ -76,6 +76,7 @@ const upload = multer({
 });
 
 const app = express();
+app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "x-sell-key, content-type");
@@ -139,10 +140,38 @@ app.post("/publish", upload.single("photo"), (req, res) => {
     store.items = [item, ...(store.items || [])];
     fs.writeFileSync(LISTINGS_JSON, `${JSON.stringify(store, null, 2)}\n`);
 
-    publishToGithub(filename, name);
+    pushListings(`List ${name}`);
     res.json({ item });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Errore pubblicazione" });
+  }
+});
+
+app.post("/remove", (req, res) => {
+  try {
+    if (req.get("x-sell-key") !== token) {
+      res.status(403).json({ error: "Apri sell-item.bat per togliere un item" });
+      return;
+    }
+    const id = String(req.body?.id || "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Seleziona un item" });
+      return;
+    }
+    const store = JSON.parse(fs.readFileSync(LISTINGS_JSON, "utf8"));
+    const item = (store.items || []).find((entry) => entry.id === id);
+    if (!item) {
+      res.status(404).json({ error: "Item non trovato" });
+      return;
+    }
+    store.items = (store.items || []).filter((entry) => entry.id !== id);
+    fs.writeFileSync(LISTINGS_JSON, `${JSON.stringify(store, null, 2)}\n`);
+    const photo = path.join(ROOT, "public", String(item.image || "").replace(/^\//, ""));
+    if (item.image && fs.existsSync(photo)) fs.unlinkSync(photo);
+    pushListings(`Remove ${item.name}`);
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Errore rimozione" });
   }
 });
 

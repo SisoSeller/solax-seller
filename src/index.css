@@ -457,6 +457,11 @@ a {
   padding-top: 12px;
 }
 
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .stock {
   color: var(--muted);
   font-size: 12px;
@@ -478,6 +483,16 @@ a {
 
 .add:hover {
   background: var(--red);
+}
+
+.add.remove {
+  background: #2a1520;
+  color: #fb7185;
+}
+
+.add.remove:hover {
+  background: #fb7185;
+  color: #fff;
 }
 
 .add:disabled {
@@ -952,6 +967,21 @@ a {
   color: var(--text);
   border-radius: 12px;
   padding: 12px;
+}
+
+.listed-block {
+  margin-top: 40px;
+  display: grid;
+  gap: 12px;
+}
+
+.listed-block h2 {
+  font-size: 22px;
+}
+
+.listed-hint {
+  color: var(--muted);
+  font-size: 14px;
 }
 
 .dropzone {

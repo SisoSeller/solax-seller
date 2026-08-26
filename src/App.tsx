@@ -9,9 +9,12 @@ import {
   fetchItems,
   listItem,
   loadOrders,
+  loadSellKey,
   loadUser,
   loginWithDiscord,
   logout,
+  removeItem,
+  saveSellKey,
   sendInvoiceWebhook,
   updateOrder,
 } from "./api";
@@ -113,6 +116,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
+  const [sellKey] = useState(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("key") || "";
+    if (fromUrl) saveSellKey(fromUrl);
+    return fromUrl || loadSellKey();
+  });
+  const canManage = Boolean(sellKey) && window.location.protocol !== "https:";
 
   useEffect(() => {
     fetchConfig().then(async (cfg) => {
@@ -165,6 +174,23 @@ export default function App() {
     }
     setCart((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
     setCartOpen(true);
+  }
+
+  async function takeDown(item: ShopItem) {
+    if (!sellKey) return;
+    if (!window.confirm(`Togliere ${item.name} dal sito?`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await removeItem(item.id, sellKey);
+      setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+      setCart((prev) => prev.filter((entry) => entry.id !== item.id));
+      setActive(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossibile togliere l'item");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function startPaypalCheckout() {
@@ -307,15 +333,29 @@ export default function App() {
                   </p>
                   <div className="row">
                     <strong>{EUR.format(item.price)}</strong>
-                    <button
-                      className="add"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        add(item);
-                      }}
-                    >
-                      Compra
-                    </button>
+                    <span className="card-actions">
+                      <button
+                        className="add"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          add(item);
+                        }}
+                      >
+                        Compra
+                      </button>
+                      {canManage && (
+                        <button
+                          className="add remove"
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            takeDown(item);
+                          }}
+                        >
+                          Togli
+                        </button>
+                      )}
+                    </span>
                   </div>
                 </article>
               ))}
@@ -493,6 +533,17 @@ export default function App() {
                 {user ? "Aggiungi al carrello" : "Accedi per comprare"}
               </button>
             </div>
+            {canManage && (
+              <button
+                className="btn btn-ghost"
+                style={{ marginTop: 12, width: "100%" }}
+                disabled={busy}
+                onClick={() => takeDown(active)}
+              >
+                {busy ? "Tolgo..." : "Togli dal sito"}
+              </button>
+            )}
+            {error && <p className="err">{error}</p>}
           </div>
         </>
       )}
@@ -634,6 +685,7 @@ export default function App() {
 
 export function SellPage() {
   const [paypalDefault, setPaypalDefault] = useState("");
+  const [listed, setListed] = useState<ShopItem[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
@@ -642,10 +694,14 @@ export function SellPage() {
   const key = new URLSearchParams(window.location.search).get("key") || "";
 
   useEffect(() => {
+    if (key) saveSellKey(key);
     fetchConfig().then((cfg) => {
       if (cfg.paypalEmail.includes("@")) setPaypalDefault(cfg.paypalEmail);
     });
-  }, []);
+    fetchItems()
+      .then((d) => setListed(d.items))
+      .catch(() => setListed([]));
+  }, [key]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -662,12 +718,28 @@ export function SellPage() {
     form.set("sellerName", "SX");
     try {
       const data = await listItem(form, key);
+      setListed((prev) => [data.item, ...prev]);
       setOk(`${data.item.name} è online. Tra un minuto la vedono tutti sul sito pubblico.`);
       setFile(null);
       setPreview("");
       event.currentTarget.reset();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Pubblicazione fallita");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function takeDown(item: ShopItem) {
+    if (!window.confirm(`Togliere ${item.name} dal sito?`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await removeItem(item.id, key);
+      setListed((prev) => prev.filter((entry) => entry.id !== item.id));
+      setOk(`${item.name} è stato tolto. Tra un minuto sparisce dal sito pubblico.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossibile togliere l'item");
     } finally {
       setBusy(false);
     }
@@ -746,6 +818,28 @@ export function SellPage() {
               {busy ? "Pubblico sul sito..." : "Metti in vendita"}
             </button>
           </form>
+        )}
+        {key && (
+          <section className="listed-block">
+            <h2>Togli dal sito</h2>
+            <p className="listed-hint">Seleziona l&apos;arma e toglila. Sparisce per tutti.</p>
+            {listed.length === 0 ? (
+              <p className="empty">Nessuna arma in vendita.</p>
+            ) : (
+              listed.map((item) => (
+                <div className="line" key={item.id}>
+                  <img src={asset(item.image)} alt="" />
+                  <div>
+                    <strong>{item.name}</strong>
+                    <p>{EUR.format(item.price)}</p>
+                  </div>
+                  <button className="linkish" disabled={busy} onClick={() => takeDown(item)}>
+                    Togli
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
         )}
       </main>
     </div>
