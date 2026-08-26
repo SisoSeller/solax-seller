@@ -929,16 +929,6 @@ a {
   pointer-events: none;
 }
 
-.paypal-hosted-card {
-  background: #2c2e2f;
-  color: #fff;
-  border-radius: 4px;
-}
-
-.paypal-hosted-card:hover {
-  background: #3a3c3d;
-}
-
 .paypal-hosted-note {
   color: var(--muted);
   font-size: 12px;

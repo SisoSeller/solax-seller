@@ -232,7 +232,7 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order, payme
         fields: [
           { name: "Discord ID", value: String(order.buyerDiscordId), inline: true },
           { name: "Account", value: order.buyerUsername, inline: true },
-          { name: "Metodo", value: "PayPal / carta", inline: true },
+          { name: "Metodo", value: "PayPal", inline: true },
           { name: "Speso", value: EUR.format(order.totalEur), inline: true },
           { name: "Cosa ha preso", value: items || "—", inline: false },
           {

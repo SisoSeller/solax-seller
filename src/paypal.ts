@@ -91,7 +91,8 @@ function sdkSrc(clientId: string) {
     currency: "EUR",
     intent: "capture",
     components: "buttons",
-    "enable-funding": "paypal,card",
+    "enable-funding": "paypal",
+    "disable-funding": "card,credit,paylater",
   });
   return `https://www.paypal.com/sdk/js?${params.toString()}`;
 }
@@ -207,7 +208,28 @@ export function startPaypalHostedCheckout(opts: {
     rm: "1",
     charset: "utf-8",
     lc: "IT",
+    landing_page: "Login",
     paymentaction: "sale",
+  };
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
+}
+
+export function logoutThenPaypal(resumeUrl: string) {
+  const form = document.createElement("form");
+  form.method = "GET";
+  form.action = "https://www.paypal.com/cgi-bin/webscr";
+  form.acceptCharset = "UTF-8";
+  const fields: Record<string, string> = {
+    cmd: "_logout",
+    return: resumeUrl,
   };
   for (const [name, value] of Object.entries(fields)) {
     const input = document.createElement("input");

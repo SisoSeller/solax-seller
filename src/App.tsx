@@ -28,6 +28,7 @@ import { asset, siteOriginPath } from "./paths";
 import {
   fundingFor,
   loadPaypalSdk,
+  logoutThenPaypal,
   paidCaptureId,
   paypalEndpoint,
   paypalReturnReceipt,
@@ -43,14 +44,27 @@ function payeeEmail(config: ShopConfig, order: Order) {
   return fromItem?.paypal || "";
 }
 
+function beginHostedPay(config: ShopConfig, source: Order) {
+  const payTo = payeeEmail(config, source);
+  if (!payTo) return false;
+  const here = siteOriginPath();
+  startPaypalHostedCheckout({
+    email: payTo,
+    amount: source.totalEur,
+    invoice: source.invoice,
+    itemName: source.items.map((item) => item.name).join(", ") || `SX ${source.invoice}`,
+    returnUrl: `${here}?paypal_return=1&invoice=${encodeURIComponent(source.invoice)}`,
+    cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(source.invoice)}`,
+  });
+  return true;
+}
+
 const PAY_BUTTONS: {
   id: string;
   method: PayMethod;
   style: Record<string, string>;
 }[] = [
   { id: "paypal-wallet", method: "paypal", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
-  { id: "paypal-card", method: "card", style: { color: "black", shape: "rect", label: "pay", layout: "vertical" } },
-  { id: "paypal-gpay", method: "googlepay", style: { layout: "vertical", shape: "rect", label: "pay" } },
 ];
 
 function hidePaySlot(id: string) {
@@ -59,6 +73,8 @@ function hidePaySlot(id: string) {
 }
 
 const finishingInvoices = new Set<string>();
+const PAYPAL_BUYER_OK = "sx-pp-buyer";
+let paypalResumeBusy = false;
 
 function buyerFromOrder(order: Order, user: DiscordUser | null): DiscordUser {
   if (user && user.id === order.buyerDiscordId) return user;
@@ -75,6 +91,7 @@ function buyerFromOrder(order: Order, user: DiscordUser | null): DiscordUser {
 function cleanPaypalQuery() {
   const url = new URL(window.location.href);
   [
+    "paypal_go",
     "paypal_return",
     "paypal_cancel",
     "invoice",
@@ -158,10 +175,6 @@ function PaypalCheckout({
         let capturing = false;
         const renderOne = async (spec: (typeof PAY_BUTTONS)[number]) => {
           if (gone || !window.paypal) return;
-          if (spec.method === "googlepay" && !window.paypal.FUNDING?.GOOGLEPAY) {
-            hidePaySlot(spec.id);
-            return;
-          }
           try {
             const button = window.paypal.Buttons({
               fundingSource: fundingFor(spec.method),
@@ -215,15 +228,13 @@ function PaypalCheckout({
               onCancel: () => errorRef.current("Pagamento annullato."),
               onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
             });
-            await renderWithTimeout(button.render(`#${spec.id}`), spec.method === "card" ? 12000 : 7000);
+            await renderWithTimeout(button.render(`#${spec.id}`));
             shown += 1;
           } catch {
             hidePaySlot(spec.id);
           }
         };
-        await Promise.all(PAY_BUTTONS.filter((btn) => btn.method !== "googlepay").map(renderOne));
-        const gpayBtn = PAY_BUTTONS.find((btn) => btn.method === "googlepay");
-        if (gpayBtn) await renderOne(gpayBtn);
+        await Promise.all(PAY_BUTTONS.map(renderOne));
         PAY_BUTTONS.forEach((spec) => {
           const slot = document.querySelector(`[data-pay="${spec.id}"]`);
           if (slot && slot.querySelectorAll("iframe").length === 0) hidePaySlot(spec.id);
@@ -247,15 +258,12 @@ function PaypalCheckout({
       return;
     }
     savePendingPaypal(order);
+    if (sessionStorage.getItem(PAYPAL_BUYER_OK) === "1") {
+      beginHostedPay(config, order);
+      return;
+    }
     const here = siteOriginPath();
-    startPaypalHostedCheckout({
-      email,
-      amount: order.totalEur,
-      invoice: order.invoice,
-      itemName: order.items.map((item) => item.name).join(", ") || `SX ${order.invoice}`,
-      returnUrl: `${here}?paypal_return=1&invoice=${encodeURIComponent(order.invoice)}`,
-      cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(order.invoice)}`,
-    });
+    logoutThenPaypal(`${here}?paypal_go=1&invoice=${encodeURIComponent(order.invoice)}`);
   }
 
   if (!email) {
@@ -274,10 +282,9 @@ function PaypalCheckout({
         <button type="button" className="paypal-hosted-btn paypal-hosted-gold" onClick={goHosted} aria-label="PayPal">
           <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
         </button>
-        <button type="button" className="paypal-hosted-btn paypal-hosted-card" onClick={goHosted}>
-          Carta di debito o credito
-        </button>
-        <p className="paypal-hosted-note">Paga su PayPal. I soldi arrivano a {email}.</p>
+        <p className="paypal-hosted-note">
+          Accedi con il tuo PayPal, non con {email}.
+        </p>
       </div>
     );
   }
@@ -285,12 +292,6 @@ function PaypalCheckout({
     <div className="paypal-buttons">
       <div className="pay-slot" data-pay="paypal-wallet">
         <div id="paypal-wallet" />
-      </div>
-      <div className="pay-slot" data-pay="paypal-card">
-        <div id="paypal-card" />
-      </div>
-      <div className="pay-slot" data-pay="paypal-gpay">
-        <div id="paypal-gpay" />
       </div>
     </div>
   );
@@ -456,13 +457,33 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    if (!config.paypalEmail && !config.discordWebhookUrl) return;
+
+    if (params.get("paypal_go") === "1") {
+      const pending = loadPendingPaypal();
+      const invoice = params.get("invoice") || pending?.invoice || "";
+      if (!pending || (invoice && pending.invoice !== invoice)) {
+        cleanPaypalQuery();
+        setError("Ordine PayPal non trovato. Riprova a pagare.");
+        return;
+      }
+      if (paypalResumeBusy) return;
+      paypalResumeBusy = true;
+      sessionStorage.setItem(PAYPAL_BUYER_OK, "1");
+      cleanPaypalQuery();
+      if (!beginHostedPay(config, pending)) {
+        paypalResumeBusy = false;
+        setError("Manca l'email PayPal dello shop.");
+      }
+      return;
+    }
+
     const pdtPaid =
       Boolean(params.get("tx") || params.get("txn_id")) ||
       (params.get("st") || params.get("payment_status") || "").toUpperCase() === "COMPLETED";
     const cameBack = params.get("paypal_return") === "1" || pdtPaid;
     const cancelled = params.get("paypal_cancel") === "1";
     if (!cameBack && !cancelled) return;
-    if (!config.paypalEmail && !config.discordWebhookUrl) return;
 
     if (cancelled) {
       clearPendingPaypal();
@@ -553,7 +574,7 @@ export default function App() {
             </h1>
             <p>
               Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
-              Per comprare serve Discord. Paghi con PayPal o carta, poi apri il ticket
+              Per comprare serve Discord. Paghi con PayPal, poi apri il ticket
               Donazione e chiedi la fattura.
             </p>
             <div className="hero-actions">
@@ -633,7 +654,7 @@ export default function App() {
         </section>
 
         <section className="wrap how" id="how">
-          <h2>PayPal o carta</h2>
+          <h2>PayPal</h2>
           <div className="steps">
             <div className="step">
               <b>01</b>
@@ -644,8 +665,8 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                Paghi con PayPal, carta o Google Pay. Completa il pagamento
-                sulla pagina PayPal: i soldi arrivano subito allo shop.
+                Paghi con PayPal. Completa il pagamento sulla pagina PayPal:
+                i soldi arrivano subito allo shop.
               </p>
             </div>
             <div className="step">
@@ -750,7 +771,7 @@ export default function App() {
                 startPaypalCheckout();
               }}
             >
-              {user ? "Paga con PayPal o carta" : "Accedi per comprare"}
+              {user ? "Paga con PayPal" : "Accedi per comprare"}
             </button>
           </aside>
         </>
@@ -880,10 +901,11 @@ export default function App() {
                   Totale: <b className="gold">{EUR.format(order.totalEur)}</b>
                 </p>
                 <div className="pay-box">
-                  <h3>Paga con PayPal o carta</h3>
+                  <h3>Paga con PayPal</h3>
                   <p>
-                    PayPal, carta o Google Pay. Completa il pagamento su PayPal:
-                    i soldi arrivano allo shop. La fattura la vedi dopo. Nessun rimborso.
+                    Completa il pagamento con il tuo account PayPal, non con
+                    quello dello shop. I soldi arrivano allo shop. La fattura la
+                    vedi dopo. Nessun rimborso.
                   </p>
                   <PaypalCheckout
                     config={config}
@@ -906,11 +928,11 @@ export default function App() {
                   Totale: <b className="gold">{EUR.format(total)}</b>
                 </p>
                 <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
-                  Paghi con PayPal o carta. I soldi arrivano allo shop.
+                  Paghi con PayPal. I soldi arrivano allo shop.
                 </p>
                 {error && <p className="err">{error}</p>}
                 <button className="btn btn-primary" disabled={cart.length === 0} onClick={startPaypalCheckout}>
-                  Paga con PayPal o carta
+                  Paga con PayPal
                 </button>
               </>
             )}
