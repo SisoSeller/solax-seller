@@ -109,10 +109,7 @@ export default function App() {
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [active, setActive] = useState<ShopItem | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
-  const [method, setMethod] = useState<"paypal" | "robux">("paypal");
-  const [hasPlus, setHasPlus] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
-  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
@@ -143,7 +140,6 @@ export default function App() {
   }, [items, query]);
 
   const total = cart.reduce((n, item) => n + item.price, 0);
-  const totalRobux = cart.reduce((n, item) => n + item.robuxPrice, 0);
   const discordReady = Boolean(config.discordClientId);
 
   function goLogin() {
@@ -166,24 +162,22 @@ export default function App() {
     setCartOpen(true);
   }
 
-  function onCheckout(event: FormEvent) {
-    event.preventDefault();
+  function startPaypalCheckout() {
     if (!user) {
       goLogin();
       return;
     }
-    if (method === "robux" && !hasPlus) {
-      setError("Per pagare in Robux serve Roblox Plus");
-      return;
-    }
-    const created = createOrder(user, cart, method, hasPlus);
+    if (cart.length === 0) return;
+    const created = createOrder(user, cart);
     setOrder(created);
     setOrders(loadOrders(user.id));
     setCart([]);
+    setCartOpen(false);
+    setCheckingOut(true);
     setError("");
   }
 
-  async function onPaid(paymentNote = note) {
+  async function onPaid(paymentNote: string) {
     if (!order || !user) return;
     setBusy(true);
     setError("");
@@ -259,7 +253,7 @@ export default function App() {
             </h1>
             <p>
               Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
-              Per comprare serve Discord. Paghi con PayPal o Robux, poi apri il ticket
+              Per comprare serve Discord. Paghi con PayPal o carta, poi apri il ticket
               Donazione e chiedi la fattura.
             </p>
             <div className="hero-actions">
@@ -325,7 +319,7 @@ export default function App() {
         </section>
 
         <section className="wrap how" id="how">
-          <h2>PayPal o Robux</h2>
+          <h2>PayPal o carta</h2>
           <div className="steps">
             <div className="step">
               <b>01</b>
@@ -336,8 +330,7 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                PayPal: paghi con conto o carta, i soldi arrivano subito allo shop.
-                Robux: serve Plus e paghi quello username Roblox.
+                Paghi con conto PayPal o carta. I soldi arrivano subito allo shop.
               </p>
             </div>
             <div className="step">
@@ -418,12 +411,10 @@ export default function App() {
                 }
                 if (cart.length === 0) return;
                 setCartOpen(false);
-                setCheckingOut(true);
-                setOrder(null);
-                setError("");
+                startPaypalCheckout();
               }}
             >
-              {user ? "Vai al checkout" : "Accedi per comprare"}
+              {user ? "Paga con PayPal o carta" : "Accedi per comprare"}
             </button>
           </aside>
         </>
@@ -461,8 +452,7 @@ export default function App() {
                 >
                   <strong>{o.invoice}</strong>
                   <p>
-                    {o.items.map((i) => i.name).join(", ")} ·{" "}
-                    {o.method === "robux" ? `${o.totalRobux} R$` : EUR.format(o.totalEur)}
+                    {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)}
                   </p>
                   <small>{o.status === "paid" ? "Pagato" : "In attesa pagamento"}</small>
                 </button>
@@ -543,49 +533,18 @@ export default function App() {
                   </a>
                 )}
                 <div className="pay-box">
-                  {order.method === "paypal" ? (
-                    <>
-                      <h3>Paga con PayPal o carta</h3>
-                      <p>
-                        I soldi arrivano subito sul PayPal dello shop. Dopo il pagamento
-                        apri il ticket Donazione per la fattura e il trade.
-                      </p>
-                      <PaypalCheckout
-                        config={config}
-                        order={order}
-                        onPaid={(captureId) => onPaid(`PayPal ${captureId}`)}
-                        onError={setError}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <h3>Robux</h3>
-                      <p>Con Roblox Plus, paga questi username:</p>
-                      <ul>
-                        {order.items.map((item) => (
-                          <li key={item.id}>
-                            {item.name}: {item.roblox} — {item.robuxPrice} R$
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
+                  <h3>Paga con PayPal o carta</h3>
+                  <p>
+                    I soldi arrivano subito sul PayPal dello shop. Dopo il pagamento
+                    apri il ticket Donazione per la fattura e il trade.
+                  </p>
+                  <PaypalCheckout
+                    config={config}
+                    order={order}
+                    onPaid={(captureId) => onPaid(`PayPal ${captureId}`)}
+                    onError={setError}
+                  />
                 </div>
-                {order.method === "robux" && (
-                  <>
-                    <label className="form-label">
-                      Username Roblox da cui hai pagato
-                      <input
-                        value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        placeholder="il tuo nick Roblox"
-                      />
-                    </label>
-                    <button className="btn btn-primary" disabled={busy} onClick={() => onPaid()}>
-                      {busy ? "Verifica in corso..." : "Ho mandato i Robux"}
-                    </button>
-                  </>
-                )}
                 {error && <p className="err">{error}</p>}
               </>
             ) : (
@@ -597,36 +556,15 @@ export default function App() {
                   </button>
                 </div>
                 <p>
-                  Totale: <b className="gold">{EUR.format(total)}</b> oppure{" "}
-                  <b className="gold">{totalRobux} R$</b>
+                  Totale: <b className="gold">{EUR.format(total)}</b>
                 </p>
-                <form className="form" onSubmit={onCheckout}>
-                  <label>
-                    Pagamento
-                    <select
-                      value={method}
-                      onChange={(e) => setMethod(e.target.value as "paypal" | "robux")}
-                    >
-                      <option value="paypal">PayPal / carta — pagamento automatico</option>
-                      <option value="robux">Robux — serve Plus, paghi quel utente</option>
-                    </select>
-                  </label>
-                  {method === "robux" && (
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={hasPlus}
-                        onChange={(e) => setHasPlus(e.target.checked)}
-                        required
-                      />
-                      Ho Roblox Plus e pagherò lo username Roblox del venditore
-                    </label>
-                  )}
-                  {error && <p className="err">{error}</p>}
-                  <button className="btn btn-primary" disabled={cart.length === 0}>
-                    Crea fattura
-                  </button>
-                </form>
+                <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
+                  Paghi con PayPal o carta. I soldi arrivano allo shop.
+                </p>
+                {error && <p className="err">{error}</p>}
+                <button className="btn btn-primary" disabled={cart.length === 0} onClick={startPaypalCheckout}>
+                  Paga con PayPal o carta
+                </button>
               </>
             )}
           </div>
@@ -782,9 +720,9 @@ export function SellPage() {
         </div>
       </header>
       <main className="wrap sell-page">
-        <div className="kicker">sell-item.bat · solo da questo PC</div>
+        <div className="kicker">sell-item.bat · non chiudere la finestra nera</div>
         <h1>Metti in vendita</h1>
-        {!key && <p className="err">Apri questa pagina da sell-item.bat.</p>}
+        {!key && <p className="err">Apri questa pagina con un doppio clic su sell-item.bat.</p>}
         {!user && <p className="empty-shop">Devi accedere con Discord prima di pubblicare.</p>}
         {error && <p className="err">{error}</p>}
         {user && key && (
@@ -825,16 +763,8 @@ export function SellPage() {
               <input name="value" type="number" min="0" step="1" required />
             </label>
             <label>
-              Tuo PayPal (email o paypal.me)
-              <input name="paypal" placeholder="email o username" />
-            </label>
-            <label>
-              Tuo username Roblox
-              <input name="roblox" placeholder="per i pagamenti in Robux" />
-            </label>
-            <label>
-              Prezzo in Robux
-              <input name="robuxPrice" type="number" min="0" step="1" placeholder="opzionale" />
+              Tuo PayPal (email)
+              <input name="paypal" type="email" required placeholder="email PayPal dove ricevi i soldi" />
             </label>
             {ok && <p className="ok">{ok}</p>}
             <button className="btn btn-primary" disabled={busy}>

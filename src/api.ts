@@ -169,22 +169,17 @@ export function logout() {
   saveUser(null);
 }
 
-export function createOrder(
-  user: DiscordUser,
-  items: ShopItem[],
-  method: "paypal" | "robux",
-  hasPlus: boolean,
-): Order {
+export function createOrder(user: DiscordUser, items: ShopItem[]): Order {
   const invoice = `SLX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
   const order: Order = {
     invoice,
     buyerDiscordId: user.id,
     buyerUsername: user.username,
-    method,
-    hasPlus,
+    method: "paypal",
+    hasPlus: false,
     status: "awaiting_payment",
     totalEur: items.reduce((n, item) => n + item.price, 0),
-    totalRobux: items.reduce((n, item) => n + item.robuxPrice, 0),
+    totalRobux: 0,
     items: items.map((item) => ({
       id: item.id,
       name: item.name,
@@ -207,12 +202,8 @@ export function updateOrder(user: DiscordUser, order: Order) {
 
 export async function sendInvoiceWebhook(config: ShopConfig, order: Order, paymentNote: string) {
   if (!config.discordWebhookUrl) throw new Error("Webhook Discord non configurato");
-  const totalLabel =
-    order.method === "robux"
-      ? `${order.totalRobux} R$`
-      : EUR.format(order.totalEur);
   const items = order.items
-    .map((item) => `• ${item.name} — ${order.method === "robux" ? `${item.robuxPrice} R$` : EUR.format(item.price)}`)
+    .map((item) => `• ${item.name} — ${EUR.format(item.price)}`)
     .join("\n");
   const payload = {
     username: "SX Fatture",
@@ -223,8 +214,8 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order, payme
         fields: [
           { name: "Discord ID", value: String(order.buyerDiscordId), inline: true },
           { name: "Account", value: order.buyerUsername, inline: true },
-          { name: "Metodo", value: order.method === "robux" ? "Robux" : "PayPal", inline: true },
-          { name: "Speso", value: totalLabel, inline: true },
+          { name: "Metodo", value: "PayPal / carta", inline: true },
+          { name: "Speso", value: EUR.format(order.totalEur), inline: true },
           { name: "Cosa ha preso", value: items || "—", inline: false },
           { name: "Dettagli pagamento", value: paymentNote || "Segnalato dal cliente", inline: false },
         ],
@@ -242,14 +233,17 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order, payme
 }
 
 export async function listItem(form: FormData, sellKey: string) {
-  const res = await fetch("http://127.0.0.1:8787/publish", {
+  if (window.location.protocol === "https:") {
+    throw new Error("Apri sell-item.bat sul PC. Dal sito pubblico non si puo vendere.");
+  }
+  const res = await fetch("/publish", {
     method: "POST",
     headers: { "x-sell-key": sellKey },
     body: form,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || "Apri sell-item.bat per pubblicare");
+    throw new Error((data as { error?: string }).error || "Apri sell-item.bat e non chiudere la finestra nera");
   }
   return data as { item: ShopItem };
 }

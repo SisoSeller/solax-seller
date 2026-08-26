@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.local
 .env
+jinius-discloud.zip
 data/store.json
 data/sell-token.txt
 data/config.json
