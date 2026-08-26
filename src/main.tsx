@@ -1,9 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
-import Sell from "./Sell";
+import App, { SellPage } from "./App";
 import "./index.css";
 
-const page = window.location.pathname.startsWith("/sell") ? <Sell /> : <App />;
+const sell = /sell(\.html)?$/i.test(window.location.pathname);
 
-createRoot(document.getElementById("root")!).render(<StrictMode>{page}</StrictMode>);
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>{sell ? <SellPage /> : <App />}</StrictMode>,
+);

@@ -4,10 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c magenta,cyan \"node server/index.js\" \"vite\"",
-    "server": "node server/index.js",
+    "dev": "concurrently -k -n seller,web -c magenta,cyan \"node scripts/seller.mjs\" \"vite\"",
+    "seller": "node scripts/seller.mjs",
     "web": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-404.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

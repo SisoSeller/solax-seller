@@ -1,13 +1,7 @@
 @echo off
-title Solax Shop
+title SX Shop
 cd /d "%~dp0"
-
-if not exist node_modules (
-  echo Installo le dipendenze...
-  call npm install
-)
-
-echo Avvio Solax...
-start "" "http://localhost:5173/"
-call npm run dev
+echo Apro il sito pubblico, sempre online:
+echo https://sisoseller.github.io/solax-seller/
+start "" "https://sisoseller.github.io/solax-seller/"
 pause

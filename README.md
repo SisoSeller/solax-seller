@@ -1,12 +1,21 @@
 # SX — Shop armi MM2
 
-Shop locale per vendere e comprare armi di Murder Mystery 2.
+Sito pubblico: https://sisoseller.github.io/solax-seller/
+
+Le armi messe in vendita con `sell-item.bat` vengono pubblicate su GitHub e le vedono tutti.
 
 ## Avvio
 
-1. Copia `.env.example` in `.env` e inserisci Discord Client ID/Secret e il webhook.
-2. Nel Discord Developer Portal, Redirect OAuth2: `http://localhost:5173/api/auth/discord/callback`
-3. Doppio clic su `avvio.bat`
-4. Per vendere: `sell-item.bat` (serve login Discord)
+- `avvio.bat` apre il sito pubblico (resta online anche a PC spento).
+- `sell-item.bat` serve per pubblicare: login Discord, foto, prezzo, value, poi push automatico.
 
-Non committare `.env`, token vendita o gli upload.
+## Discord
+
+Nel Developer Portal: **Public Client** attivo.
+
+Redirect OAuth2:
+- `https://sisoseller.github.io/solax-seller/`
+- `http://localhost:5173/`
+- `http://localhost:5173/sell.html`
+
+Poi metti il Client ID in `public/shop-config.json` e fai push.

@@ -2,20 +2,29 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   EUR,
   VALUE,
-  confirmPaid,
+  type ShopConfig,
+  completeDiscordLogin,
   createOrder,
   fetchConfig,
   fetchItems,
-  fetchMe,
-  fetchOrders,
+  listItem,
+  loadOrders,
+  loadUser,
   loginWithDiscord,
   logout,
-  saveSetup,
+  sendInvoiceWebhook,
+  updateOrder,
 } from "./api";
+import { asset, siteOriginPath } from "./paths";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 export default function App() {
-  const [user, setUser] = useState<DiscordUser | null>(null);
+  const [config, setConfig] = useState<ShopConfig>({
+    discordClientId: "",
+    discordTicketUrl: "",
+    discordWebhookUrl: "",
+  });
+  const [user, setUser] = useState<DiscordUser | null>(loadUser());
   const [items, setItems] = useState<ShopItem[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [query, setQuery] = useState("");
@@ -27,32 +36,29 @@ export default function App() {
   const [method, setMethod] = useState<"paypal" | "robux">("paypal");
   const [hasPlus, setHasPlus] = useState(false);
   const [order, setOrder] = useState<Order | null>(null);
-  const [ticketUrl, setTicketUrl] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
-  const [discordReady, setDiscordReady] = useState(true);
 
   useEffect(() => {
-    fetchMe().then((d) => setUser(d.user)).catch(() => setUser(null));
-    fetchItems().then((d) => setItems(d.items)).catch(() => setItems([]));
-    fetchConfig().then((d) => {
-      setDiscordReady(d.discordReady);
-      setTicketUrl(d.ticketUrl);
-      const need = new URLSearchParams(window.location.search).get("needSetup");
-      if (!d.discordReady || need) setSetupOpen(true);
+    fetchConfig().then(async (cfg) => {
+      setConfig(cfg);
+      try {
+        const logged = await completeDiscordLogin(cfg);
+        if (logged) setUser(logged);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Login Discord fallito");
+        setSetupOpen(true);
+      }
     });
+    fetchItems()
+      .then((d) => setItems(d.items))
+      .catch(() => setItems([]));
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      setOrders([]);
-      return;
-    }
-    fetchOrders()
-      .then((d) => setOrders(d.orders))
-      .catch(() => setOrders([]));
+    setOrders(user ? loadOrders(user.id) : []);
   }, [user]);
 
   const list = useMemo(() => {
@@ -62,53 +68,60 @@ export default function App() {
 
   const total = cart.reduce((n, item) => n + item.price, 0);
   const totalRobux = cart.reduce((n, item) => n + item.robuxPrice, 0);
+  const discordReady = Boolean(config.discordClientId);
+
+  function goLogin() {
+    if (!discordReady) {
+      setSetupOpen(true);
+      return;
+    }
+    loginWithDiscord(config).catch((err) => {
+      setError(err instanceof Error ? err.message : "Login fallito");
+      setSetupOpen(true);
+    });
+  }
 
   function add(item: ShopItem) {
     if (!user) {
-      loginWithDiscord();
+      goLogin();
       return;
     }
     setCart((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
     setCartOpen(true);
   }
 
-  async function onCheckout(event: FormEvent) {
+  function onCheckout(event: FormEvent) {
     event.preventDefault();
     if (!user) {
-      loginWithDiscord();
+      goLogin();
       return;
     }
-    setBusy(true);
-    setError("");
-    try {
-      const data = await createOrder(
-        cart.map((item) => item.id),
-        method,
-        hasPlus,
-      );
-      setOrder(data.order);
-      setTicketUrl(data.ticketUrl);
-      setCart([]);
-      const mine = await fetchOrders();
-      setOrders(mine.orders);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Checkout fallito");
-    } finally {
-      setBusy(false);
+    if (method === "robux" && !hasPlus) {
+      setError("Per pagare in Robux serve Roblox Plus");
+      return;
     }
+    const created = createOrder(user, cart, method, hasPlus);
+    setOrder(created);
+    setOrders(loadOrders(user.id));
+    setCart([]);
+    setError("");
   }
 
   async function onPaid() {
-    if (!order) return;
+    if (!order || !user) return;
     setBusy(true);
     setError("");
     try {
-      const data = await confirmPaid(order.invoice, note);
-      setOrder(data.order);
-      const mine = await fetchOrders();
-      setOrders(mine.orders);
-      const shop = await fetchItems();
-      setItems(shop.items);
+      const paid: Order = {
+        ...order,
+        status: "paid",
+        paidAt: Date.now(),
+        paymentNote: note,
+      };
+      await sendInvoiceWebhook(config, paid, note);
+      updateOrder(user, paid);
+      setOrder(paid);
+      setOrders(loadOrders(user.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verifica fallita");
     } finally {
@@ -123,8 +136,8 @@ export default function App() {
 
       <header className="nav">
         <div className="wrap nav-inner">
-          <a className="brand" href="/">
-            <img className="brand-img" src="/sx-logo.jpg" alt="SX" />
+          <a className="brand" href={asset("")}>
+            <img className="brand-img" src={asset("sx-logo.jpg")} alt="SX" />
             <span>
               <strong>SX</strong>
               <span>Arsenale MM2</span>
@@ -149,10 +162,7 @@ export default function App() {
                 </span>
               </button>
             ) : (
-              <button
-                className="btn btn-primary"
-                onClick={() => (discordReady ? loginWithDiscord() : setSetupOpen(true))}
-              >
+              <button className="btn btn-primary" onClick={goLogin}>
                 Accedi con Discord
               </button>
             )}
@@ -163,33 +173,30 @@ export default function App() {
       <main>
         <section className="wrap hero">
           <div>
-            <div className="kicker">Murder Mystery 2 · Login Discord</div>
+            <div className="kicker">Murder Mystery 2 · Sempre online</div>
             <h1>
               COMPRA ARMI
               <br />
               <em>MM2</em> ADESSO
             </h1>
             <p>
-              Catalogo vuoto finché un venditore non pubblica con <b>sell-item.bat</b>.
-              Per comprare o vendere serve l&apos;account Discord. Paghi con PayPal o
-              Robux, poi apri il ticket Donazione e chiedi la fattura.
+              Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
+              Per comprare serve Discord. Paghi con PayPal o Robux, poi apri il ticket
+              Donazione e chiedi la fattura.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#shop">
                 Vedi le armi
               </a>
               {!user && (
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => (discordReady ? loginWithDiscord() : setSetupOpen(true))}
-                >
+                <button className="btn btn-ghost" onClick={goLogin}>
                   Accedi con Discord
                 </button>
               )}
             </div>
           </div>
           <article className="hero-photo-card">
-            <img src="/solax-hero.png" alt="SX shop" />
+            <img src={asset("solax-hero.png")} alt="SX shop" />
           </article>
         </section>
 
@@ -206,9 +213,8 @@ export default function App() {
             <div className="empty-shop">
               <h2>Nessuna arma in vendita</h2>
               <p>
-                Le armi predefinite sono state rimosse. Per pubblicare un item avvia{" "}
-                <code>sell-item.bat</code>, accedi con Discord, trascina la foto e
-                inserisci nome, prezzo e value.
+                Quando pubblichi con <code>sell-item.bat</code> l&apos;arma va su GitHub e
+                compare qui per tutti, anche a sito sempre aperto.
               </p>
             </div>
           ) : (
@@ -216,7 +222,7 @@ export default function App() {
               {list.map((item) => (
                 <article key={item.id} className="card" onClick={() => setActive(item)}>
                   <div className="card-photo">
-                    <img src={item.image} alt={item.name} />
+                    <img src={asset(item.image)} alt={item.name} />
                   </div>
                   <h3>{item.name}</h3>
                   <p className="stock">
@@ -260,9 +266,8 @@ export default function App() {
               <b>03</b>
               <h3>Ticket e fattura</h3>
               <p>
-                Apri il ticket Discord Donazione e richiedi la tua fattura. Quando il
-                pagamento è inviato, SX manda webhook con numero, Discord ID, item e
-                totale.
+                Apri il ticket Discord Donazione e richiedi la tua fattura. Quando
+                segnali il pagamento, parte il webhook con Discord ID, item e totale.
               </p>
             </div>
           </div>
@@ -273,7 +278,6 @@ export default function App() {
           <div className="trust-card">
             <p>
               Per ogni acquisto: <b>apri il ticket Discord Donazione e richiedi la tua fattura</b>.
-              Il codice fattura (es. SLX-XXXX) è quello che lo staff vede nel webhook.
             </p>
           </div>
         </section>
@@ -282,7 +286,13 @@ export default function App() {
       <footer className="wrap foot">
         <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
         {user && (
-          <button className="linkish" onClick={() => logout().then(() => setUser(null))}>
+          <button
+            className="linkish"
+            onClick={() => {
+              logout();
+              setUser(null);
+            }}
+          >
             Esci da Discord
           </button>
         )}
@@ -302,7 +312,7 @@ export default function App() {
               {cart.length === 0 && <p className="empty">Il carrello è vuoto.</p>}
               {cart.map((item) => (
                 <div className="line" key={item.id}>
-                  <img src={item.image} alt="" />
+                  <img src={asset(item.image)} alt="" />
                   <div>
                     <strong>{item.name}</strong>
                     <p>{EUR.format(item.price)}</p>
@@ -322,7 +332,7 @@ export default function App() {
               disabled={cart.length === 0}
               onClick={() => {
                 if (!user) {
-                  loginWithDiscord();
+                  goLogin();
                   return;
                 }
                 setCartOpen(false);
@@ -390,7 +400,7 @@ export default function App() {
                 ×
               </button>
             </div>
-            <img className="modal-photo" src={active.image} alt="" />
+            <img className="modal-photo" src={asset(active.image)} alt="" />
             <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
               value {VALUE.format(active.value)} · venduto da {active.sellerName}
             </p>
@@ -419,8 +429,7 @@ export default function App() {
                 <div className="kicker">Pagamento registrato</div>
                 <h2>Fattura inviata su Discord</h2>
                 <p style={{ color: "var(--muted)", marginTop: 10 }}>
-                  Il webhook ha mandato Discord ID, item e totale. Tieni il ticket
-                  Donazione aperto.
+                  Tieni il ticket Donazione aperto.
                 </p>
                 <code>{order.invoice}</code>
                 <div style={{ marginTop: 22 }}>
@@ -441,8 +450,13 @@ export default function App() {
                   Apri il ticket Discord Donazione e richiedi la tua fattura{" "}
                   <b>{order.invoice}</b>
                 </p>
-                {ticketUrl && (
-                  <a className="btn btn-primary" href={ticketUrl} target="_blank" rel="noreferrer">
+                {config.discordTicketUrl && (
+                  <a
+                    className="btn btn-primary"
+                    href={config.discordTicketUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     Apri il ticket Discord Donazione
                   </a>
                 )}
@@ -521,8 +535,8 @@ export default function App() {
                     </label>
                   )}
                   {error && <p className="err">{error}</p>}
-                  <button className="btn btn-primary" disabled={busy || cart.length === 0}>
-                    {busy ? "Creo la fattura..." : "Crea fattura"}
+                  <button className="btn btn-primary" disabled={cart.length === 0}>
+                    Crea fattura
                   </button>
                 </form>
               </>
@@ -542,19 +556,12 @@ export default function App() {
               </button>
             </div>
             <p style={{ color: "var(--muted)", marginBottom: 12 }}>
-              Crea un&apos;app su{" "}
-              <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">
-                Discord Developer Portal
-              </a>
-              , OAuth2 → Redirects:{" "}
-              <code>http://localhost:5173/api/auth/discord/callback</code>
+              Nel Discord Developer Portal attiva <b>Public Client</b>, poi OAuth2 Redirects:
             </p>
-            <SetupForm
-              onDone={() => {
-                setDiscordReady(true);
-                setSetupOpen(false);
-              }}
-            />
+            <code>{siteOriginPath()}</code>
+            <p style={{ color: "var(--muted)", margin: "12px 0" }}>
+              Metti il Client ID in <code>public/shop-config.json</code> e fai push.
+            </p>
           </div>
         </>
       )}
@@ -562,38 +569,158 @@ export default function App() {
   );
 }
 
-function SetupForm({ onDone }: { onDone: () => void }) {
+export function SellPage() {
+  const [config, setConfig] = useState<ShopConfig>({
+    discordClientId: "",
+    discordTicketUrl: "",
+    discordWebhookUrl: "",
+  });
+  const [user, setUser] = useState<DiscordUser | null>(loadUser());
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [ok, setOk] = useState("");
+  const key = new URLSearchParams(window.location.search).get("key") || "";
+
+  useEffect(() => {
+    fetchConfig().then(async (cfg) => {
+      setConfig(cfg);
+      try {
+        const logged = await completeDiscordLogin(cfg);
+        if (logged) setUser(logged);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Login Discord fallito");
+      }
+    });
+  }, []);
+
+  function goLogin() {
+    loginWithDiscord(config, window.location.href).catch((err) => {
+      setError(err instanceof Error ? err.message : "Login fallito");
+    });
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!user) {
+      goLogin();
+      return;
+    }
+    if (!file) {
+      setError("Trascina la foto dell'arma");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setOk("");
     const form = new FormData(event.currentTarget);
+    form.set("photo", file);
+    form.set("sellerDiscordId", user.id);
+    form.set("sellerName", user.username);
     try {
-      await saveSetup({
-        discordClientId: String(form.get("id") || ""),
-        discordClientSecret: String(form.get("secret") || ""),
-        discordTicketUrl: String(form.get("ticket") || ""),
-      });
-      onDone();
+      const data = await listItem(form, key);
+      setOk(`${data.item.name} è online. Tra un minuto la vedono tutti sul sito pubblico.`);
+      setFile(null);
+      setPreview("");
+      event.currentTarget.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Setup fallito");
+      setError(err instanceof Error ? err.message : "Pubblicazione fallita");
+    } finally {
+      setBusy(false);
     }
   }
+
   return (
-    <form className="form" onSubmit={onSubmit}>
-      <label>
-        Discord Client ID
-        <input name="id" required placeholder="1234567890" />
-      </label>
-      <label>
-        Discord Client Secret
-        <input name="secret" required type="password" />
-      </label>
-      <label>
-        Link ticket Discord Donazione
-        <input name="ticket" placeholder="https://discord.gg/..." />
-      </label>
-      {error && <p className="err">{error}</p>}
-      <button className="btn btn-primary">Salva e abilita login</button>
-    </form>
+    <div className="app">
+      <div className="glow" />
+      <div className="noise" />
+      <header className="nav">
+        <div className="wrap nav-inner">
+          <a className="brand" href={asset("")}>
+            <img className="brand-img" src={asset("sx-logo.jpg")} alt="SX" />
+            <span>
+              <strong>SX</strong>
+              <span>Vendi item</span>
+            </span>
+          </a>
+          {user ? (
+            <div className="user-chip static">
+              <img src={user.avatar} alt="" />
+              <span>
+                <strong>{user.username}</strong>
+                <small>{user.id}</small>
+              </span>
+            </div>
+          ) : (
+            <button className="btn btn-primary" onClick={goLogin}>
+              Accedi con Discord
+            </button>
+          )}
+        </div>
+      </header>
+      <main className="wrap sell-page">
+        <div className="kicker">sell-item.bat · solo da questo PC</div>
+        <h1>Metti in vendita</h1>
+        {!key && <p className="err">Apri questa pagina da sell-item.bat.</p>}
+        {!user && <p className="empty-shop">Devi accedere con Discord prima di pubblicare.</p>}
+        {error && <p className="err">{error}</p>}
+        {user && key && (
+          <form className="sell-form" onSubmit={onSubmit}>
+            <div
+              className={`dropzone ${preview ? "has" : ""}`}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const dropped = e.dataTransfer.files[0] || null;
+                if (!dropped) return;
+                setFile(dropped);
+                setPreview(URL.createObjectURL(dropped));
+              }}
+            >
+              {preview ? <img src={preview} alt="Anteprima" /> : <p>Trascina qui la foto dell&apos;arma</p>}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const dropped = e.target.files?.[0] || null;
+                  if (!dropped) return;
+                  setFile(dropped);
+                  setPreview(URL.createObjectURL(dropped));
+                }}
+              />
+            </div>
+            <label>
+              Nome arma
+              <input name="name" required placeholder="es. Chroma Evergreen" />
+            </label>
+            <label>
+              Prezzo euro
+              <input name="price" type="number" min="0.01" step="0.01" required />
+            </label>
+            <label>
+              Value MM2
+              <input name="value" type="number" min="0" step="1" required />
+            </label>
+            <label>
+              Tuo PayPal (email o paypal.me)
+              <input name="paypal" placeholder="email o username" />
+            </label>
+            <label>
+              Tuo username Roblox
+              <input name="roblox" placeholder="per i pagamenti in Robux" />
+            </label>
+            <label>
+              Prezzo in Robux
+              <input name="robuxPrice" type="number" min="0" step="1" placeholder="opzionale" />
+            </label>
+            {ok && <p className="ok">{ok}</p>}
+            <button className="btn btn-primary" disabled={busy}>
+              {busy ? "Pubblico sul sito..." : "Metti in vendita"}
+            </button>
+          </form>
+        )}
+      </main>
+    </div>
   );
 }
