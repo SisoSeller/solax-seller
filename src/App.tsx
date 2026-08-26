@@ -15,7 +15,7 @@ import {
   sendInvoiceWebhook,
   updateOrder,
 } from "./api";
-import { asset, siteOriginPath } from "./paths";
+import { DISCORD_INVITE } from "./discord";
 import { loadPaypalSdk } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
@@ -221,7 +221,9 @@ export default function App() {
           <nav className="nav-links">
             <a href="#shop">Shop</a>
             <a href="#how">Pagamenti</a>
-            <a href="#trust">Ticket</a>
+            <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+              Discord
+            </a>
           </nav>
           <div className="nav-right">
             <button className="cart-btn" onClick={() => setCartOpen(true)}>
@@ -360,6 +362,9 @@ export default function App() {
 
       <footer className="wrap foot">
         <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
+        <a className="discord-join" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+          Unisciti al Discord
+        </a>
         {user && (
           <button
             className="linkish"
@@ -404,12 +409,13 @@ export default function App() {
             </div>
             <button
               className="btn btn-primary"
-              disabled={cart.length === 0}
+              disabled={Boolean(user) && cart.length === 0}
               onClick={() => {
                 if (!user) {
                   goLogin();
                   return;
                 }
+                if (cart.length === 0) return;
                 setCartOpen(false);
                 setCheckingOut(true);
                 setOrder(null);
@@ -525,10 +531,10 @@ export default function App() {
                   Apri il ticket Discord Donazione e richiedi la tua fattura{" "}
                   <b>{order.invoice}</b>
                 </p>
-                {config.discordTicketUrl && (
+                {(config.discordTicketUrl || DISCORD_INVITE) && (
                   <a
                     className="btn btn-primary"
-                    href={config.discordTicketUrl}
+                    href={config.discordTicketUrl || DISCORD_INVITE}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -631,18 +637,50 @@ export default function App() {
           <div className="overlay" onClick={() => setSetupOpen(false)} />
           <div className="modal">
             <div className="head-row">
-              <h2>Setup Discord</h2>
+              <h2>Collega Discord</h2>
               <button className="close" onClick={() => setSetupOpen(false)}>
                 ×
               </button>
             </div>
-            <p style={{ color: "var(--muted)", marginBottom: 12 }}>
-              Nel Discord Developer Portal attiva <b>Public Client</b>, poi OAuth2 Redirects:
+            <p style={{ color: "var(--muted)", marginBottom: 14 }}>
+              Accedi come sugli altri siti: Discord ti chiede di autorizzare SX, poi torni qui
+              col tuo account.
             </p>
-            <code>{siteOriginPath()}</code>
-            <p style={{ color: "var(--muted)", margin: "12px 0" }}>
-              Metti il Client ID in <code>public/shop-config.json</code> e fai push.
-            </p>
+            <a className="btn btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+              Entra nel server Discord
+            </a>
+            <form
+              className="form"
+              style={{ marginTop: 16 }}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const id = String(new FormData(event.currentTarget).get("clientId") || "").trim();
+                if (!id) return;
+                localStorage.setItem("sx-discord-client-id", id);
+                const next = { ...config, discordClientId: id };
+                setConfig(next);
+                setSetupOpen(false);
+                loginWithDiscord(next).catch((err) => {
+                  setError(err instanceof Error ? err.message : "Login fallito");
+                  setSetupOpen(true);
+                });
+              }}
+            >
+              <label>
+                Discord Client ID
+                <input
+                  name="clientId"
+                  required
+                  defaultValue={config.discordClientId}
+                  placeholder="incolla il Client ID dell'app Discord"
+                />
+              </label>
+              <p style={{ color: "var(--muted)", fontSize: 13 }}>
+                Redirect da mettere nel Developer Portal: <code>{siteOriginPath()}</code>
+                . Attiva anche <b>Public Client</b>.
+              </p>
+              <button className="btn btn-primary">Accedi con Discord</button>
+            </form>
           </div>
         </>
       )}

@@ -34,7 +34,14 @@ export async function fetchConfig(): Promise<ShopConfig> {
     paypalEmail: "",
   };
   try {
-    return { ...empty, ...(await readJson<Partial<ShopConfig>>(asset("shop-config.json"))) };
+    const file = await readJson<Partial<ShopConfig>>(asset("shop-config.json"));
+    const savedId = localStorage.getItem("sx-discord-client-id") || "";
+    return {
+      ...empty,
+      ...file,
+      discordClientId: file.discordClientId || savedId,
+      discordTicketUrl: file.discordTicketUrl || "https://discord.gg/zq3fR5MxgU",
+    };
   } catch {
     return empty;
   }
@@ -103,6 +110,7 @@ export async function loginWithDiscord(config: ShopConfig, next = window.locatio
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", siteOriginPath());
   url.searchParams.set("scope", "identify");
+  url.searchParams.set("prompt", "consent");
   url.searchParams.set("code_challenge", await challenge(verifier));
   url.searchParams.set("code_challenge_method", "S256");
   window.location.href = url.toString();

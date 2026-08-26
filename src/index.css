@@ -535,8 +535,22 @@ a {
   font-size: 13px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 18px;
   flex-wrap: wrap;
+}
+
+.discord-join {
+  background: #5865f2;
+  color: white;
+  text-decoration: none;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-weight: 600;
+}
+
+.discord-join:hover {
+  filter: brightness(1.08);
 }
 
 .overlay {
