@@ -858,6 +858,8 @@ a {
 .paypal-buttons {
   margin-top: 14px;
   min-height: 50px;
+  display: grid;
+  gap: 10px;
 }
 
 .pay-box {

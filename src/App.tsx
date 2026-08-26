@@ -47,9 +47,11 @@ function PaypalCheckout({
 
   useEffect(() => {
     if (!config.paypalClientId) return;
-    const host = document.getElementById("paypal-buttons");
-    if (!host) return;
-    host.innerHTML = "";
+    const wallet = document.getElementById("paypal-wallet");
+    const card = document.getElementById("paypal-card");
+    if (!wallet || !card) return;
+    wallet.innerHTML = "";
+    card.innerHTML = "";
     let gone = false;
     loadPaypalSdk(config.paypalClientId)
       .then(() => {
@@ -61,26 +63,69 @@ function PaypalCheckout({
         };
         const email = payeeEmail(config, order);
         if (email) unit.payee = { email_address: email };
-        return window.paypal
-          .Buttons({
-            style: { color: "gold", shape: "pill", label: "paypal" },
-            createOrder: (_data, actions) =>
-              actions.order.create({
-                purchase_units: [unit],
-                application_context: { shipping_preference: "NO_SHIPPING" },
-              }),
-            onApprove: async (_data, actions) => {
-              const details = await actions.order.capture();
-              paidRef.current(details.id || "paypal");
-            },
-            onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
-          })
-          .render("#paypal-buttons");
+        const paypal = window.paypal;
+        if (!paypal) return;
+        const common = {
+          createOrder: (_data: unknown, actions: { order: { create: (body: unknown) => Promise<string> } }) =>
+            actions.order.create({
+              purchase_units: [unit],
+              application_context: {
+                shipping_preference: "NO_SHIPPING",
+                landing_page: "LOGIN",
+                user_action: "PAY_NOW",
+              },
+            }),
+          onApprove: async (
+            _data: unknown,
+            actions: { order: { capture: () => Promise<{ id?: string }> } },
+          ) => {
+            const details = await actions.order.capture();
+            paidRef.current(details.id || "paypal");
+          },
+          onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
+        };
+        const renders: Promise<unknown>[] = [];
+        if (paypal.FUNDING?.PAYPAL) {
+          renders.push(
+            paypal
+              .Buttons({
+                ...common,
+                fundingSource: paypal.FUNDING.PAYPAL,
+                style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" },
+              })
+              .render("#paypal-wallet")
+              .catch(() => undefined),
+          );
+        }
+        if (paypal.FUNDING?.CARD) {
+          renders.push(
+            paypal
+              .Buttons({
+                ...common,
+                fundingSource: paypal.FUNDING.CARD,
+                style: { color: "gold", shape: "rect", label: "pay", layout: "vertical" },
+              })
+              .render("#paypal-card")
+              .catch(() => undefined),
+          );
+        }
+        if (renders.length === 0) {
+          renders.push(
+            paypal
+              .Buttons({
+                ...common,
+                style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" },
+              })
+              .render("#paypal-wallet"),
+          );
+        }
+        return Promise.all(renders);
       })
       .catch(() => errorRef.current("Impossibile caricare PayPal."));
     return () => {
       gone = true;
-      host.innerHTML = "";
+      wallet.innerHTML = "";
+      card.innerHTML = "";
     };
   }, [config.paypalClientId, config.paypalEmail, order.invoice, order.totalEur]);
 
@@ -92,7 +137,12 @@ function PaypalCheckout({
       </p>
     );
   }
-  return <div id="paypal-buttons" className="paypal-buttons" />;
+  return (
+    <div className="paypal-buttons">
+      <div id="paypal-wallet" />
+      <div id="paypal-card" />
+    </div>
+  );
 }
 
 export default function App() {
@@ -375,7 +425,8 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                Paghi con conto PayPal o carta. I soldi arrivano subito allo shop.
+                Paghi col saldo PayPal, col conto o con la carta. I soldi arrivano
+                subito allo shop.
               </p>
             </div>
             <div className="step">
@@ -591,8 +642,8 @@ export default function App() {
                 <div className="pay-box">
                   <h3>Paga con PayPal o carta</h3>
                   <p>
-                    I soldi arrivano subito sul PayPal dello shop. Dopo il pagamento
-                    apri il ticket Donazione per la fattura e il trade.
+                    Puoi pagare col saldo PayPal, con il conto, o con la carta. I soldi
+                    arrivano subito allo shop.
                   </p>
                   <PaypalCheckout
                     config={config}
