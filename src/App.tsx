@@ -94,13 +94,7 @@ function PaypalCheckout({
       .then(async () => {
         if (gone) return;
         errorRef.current("");
-        const unit: Record<string, unknown> = {
-          amount: { currency_code: "EUR", value: order.totalEur.toFixed(2) },
-          description: `SX ${order.invoice}`.slice(0, 127),
-          custom_id: order.invoice,
-        };
         const email = payeeEmail(config, order);
-        if (email) unit.payee = { email_address: email };
         let shown = 0;
         let capturing = false;
         const renderOne = async (spec: (typeof PAY_BUTTONS)[number]) => {
@@ -113,15 +107,26 @@ function PaypalCheckout({
             const button = window.paypal.Buttons({
               fundingSource: fundingFor(spec.method),
               style: spec.style,
-              createOrder: (_data, actions) =>
-                actions.order.create({
-                  purchase_units: [unit],
+              createOrder: (_data, actions) => {
+                const purchase: Record<string, unknown> = {
+                  amount: { currency_code: "EUR", value: order.totalEur.toFixed(2) },
+                  description: `SX ${order.invoice}`.slice(0, 127),
+                  custom_id: order.invoice,
+                };
+                // Hosted card rejects capture if payee is forced; money still
+                // goes to the PayPal account of this Client ID.
+                if (email && spec.method === "paypal") {
+                  purchase.payee = { email_address: email };
+                }
+                return actions.order.create({
+                  purchase_units: [purchase],
                   application_context: {
                     shipping_preference: "NO_SHIPPING",
                     landing_page: landingFor(spec.method),
                     user_action: "PAY_NOW",
                   },
-                }),
+                });
+              },
               onApprove: async (_data, actions) => {
                 if (capturing) return;
                 capturing = true;

@@ -3,7 +3,9 @@ export type PayMethod = "paypal" | "card" | "googlepay";
 type PaypalCapture = {
   id?: string;
   status?: string;
+  amount?: { value?: string };
   purchase_units?: Array<{
+    amount?: { value?: string };
     payments?: {
       captures?: Array<{
         id?: string;
@@ -13,6 +15,55 @@ type PaypalCapture = {
     };
   }>;
 };
+
+function asRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function moneyValue(value: unknown) {
+  const rec = asRecord(value);
+  const amount = rec ? asRecord(rec.amount) : null;
+  const raw = amount?.value ?? rec?.value;
+  if (raw == null || raw === "") return undefined;
+  const parsed = Number(String(raw).replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function paidCaptureId(details: unknown, expectedEur: number) {
+  const root = asRecord(details) as PaypalCapture | null;
+  if (!root) return "";
+
+  const unitsRaw = root.purchase_units as unknown;
+  const units = Array.isArray(unitsRaw) ? unitsRaw : unitsRaw ? [unitsRaw] : [];
+  const captures: PaypalCapture[] = [];
+  for (const unit of units) {
+    const payments = asRecord(asRecord(unit)?.payments);
+    const list = payments?.captures;
+    if (Array.isArray(list)) {
+      for (const capture of list) {
+        const rec = asRecord(capture);
+        if (rec) captures.push(rec as PaypalCapture);
+      }
+    }
+  }
+  if (!captures.length && root.id && root.status) captures.push(root);
+
+  const completed =
+    captures.find((capture) => String(capture.status || "").toUpperCase() === "COMPLETED") ||
+    (String(root.status || "").toUpperCase() === "COMPLETED" ? root : undefined);
+  if (!completed) return "";
+
+  const status = String(completed.status || root.status || "").toUpperCase();
+  if (status !== "COMPLETED") return "";
+
+  const id = String(completed.id || root.id || "");
+  if (!id || id.toLowerCase() === "paypal") return "";
+
+  const value = moneyValue(completed) ?? moneyValue(units[0]) ?? moneyValue(root);
+  if (value != null && Math.abs(value - expectedEur) > 0.009) return "";
+  return id;
+}
 
 type PaypalButtonsApi = {
   FUNDING?: { PAYPAL: string; CARD: string; GOOGLEPAY?: string };
@@ -25,7 +76,7 @@ type PaypalButtonsApi = {
     ) => Promise<string>;
     onApprove: (
       data: unknown,
-      actions: { order: { capture: () => Promise<PaypalCapture> } },
+      actions: { order: { capture: () => Promise<unknown> } },
     ) => Promise<void>;
     onCancel?: () => void;
     onError?: (err: unknown) => void;
@@ -92,13 +143,4 @@ export function fundingFor(method: PayMethod) {
 export function landingFor(method: PayMethod) {
   if (method === "card") return "BILLING";
   return "LOGIN";
-}
-
-export function paidCaptureId(details: PaypalCapture | undefined, expectedEur: number) {
-  const capture = details?.purchase_units?.[0]?.payments?.captures?.[0];
-  const status = capture?.status || details?.status;
-  const value = Number(capture?.amount?.value);
-  if (!capture?.id || status !== "COMPLETED") return "";
-  if (!Number.isFinite(value) || Math.abs(value - expectedEur) > 0.05) return "";
-  return capture.id;
 }
