@@ -175,6 +175,39 @@ app.post("/remove", (req, res) => {
   }
 });
 
+app.post("/sold", (req, res) => {
+  try {
+    if (req.get("x-sell-key") !== token) {
+      res.status(403).json({ error: "Apri sell-item.bat per togliere un item" });
+      return;
+    }
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+    if (!ids.length) {
+      res.status(400).json({ error: "Nessun item da togliere" });
+      return;
+    }
+    const store = JSON.parse(fs.readFileSync(LISTINGS_JSON, "utf8"));
+    const wanted = new Set(ids);
+    let changed = 0;
+    store.items = (store.items || []).map((entry) => {
+      if (!wanted.has(entry.id) || entry.sold) return entry;
+      changed += 1;
+      return { ...entry, sold: true };
+    });
+    if (!changed) {
+      res.json({ ok: true, changed: 0 });
+      return;
+    }
+    fs.writeFileSync(LISTINGS_JSON, `${JSON.stringify(store, null, 2)}\n`);
+    pushListings(`Sold ${ids.join(", ")}`);
+    res.json({ ok: true, changed });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Errore vendita" });
+  }
+});
+
 function keepAlive(message) {
   console.log(message);
   setInterval(() => {}, 1 << 30);

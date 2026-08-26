@@ -1,4 +1,18 @@
-export type PayMethod = "paypal" | "saldo" | "card" | "googlepay";
+export type PayMethod = "paypal" | "card" | "googlepay";
+
+type PaypalCapture = {
+  id?: string;
+  status?: string;
+  purchase_units?: Array<{
+    payments?: {
+      captures?: Array<{
+        id?: string;
+        status?: string;
+        amount?: { value?: string };
+      }>;
+    };
+  }>;
+};
 
 type PaypalButtonsApi = {
   FUNDING?: { PAYPAL: string; CARD: string; GOOGLEPAY?: string };
@@ -11,23 +25,22 @@ type PaypalButtonsApi = {
     ) => Promise<string>;
     onApprove: (
       data: unknown,
-      actions: { order: { capture: () => Promise<{ id?: string }> } },
+      actions: { order: { capture: () => Promise<PaypalCapture> } },
     ) => Promise<void>;
+    onCancel?: () => void;
     onError?: (err: unknown) => void;
   }) => {
     render: (selector: string) => Promise<void>;
-    isEligible?: () => boolean;
   };
 };
 
 declare global {
   interface Window {
     paypal?: PaypalButtonsApi;
-    paypalSaldo?: PaypalButtonsApi;
   }
 }
 
-function sdkSrc(clientId: string, namespace: "paypal" | "paypalSaldo") {
+function sdkSrc(clientId: string) {
   const params = new URLSearchParams({
     "client-id": clientId,
     currency: "EUR",
@@ -35,29 +48,23 @@ function sdkSrc(clientId: string, namespace: "paypal" | "paypalSaldo") {
     components: "buttons",
     "enable-funding": "paypal,card",
   });
-  if (namespace === "paypalSaldo") params.set("locale", "it_IT");
   return `https://www.paypal.com/sdk/js?${params.toString()}`;
 }
 
-function apiFor(namespace: "paypal" | "paypalSaldo") {
-  return namespace === "paypalSaldo" ? window.paypalSaldo : window.paypal;
-}
-
-function loadOne(clientId: string, namespace: "paypal" | "paypalSaldo") {
-  if (apiFor(namespace)) return Promise.resolve();
-  document.querySelectorAll<HTMLScriptElement>(`script[data-sx-paypal="${namespace}"]`).forEach((script) => {
-    if (!apiFor(namespace)) script.remove();
+export function loadPaypalSdk(clientId: string) {
+  if (window.paypal) return Promise.resolve();
+  document.querySelectorAll<HTMLScriptElement>("script[data-sx-paypal]").forEach((script) => {
+    if (!window.paypal) script.remove();
   });
   return new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = sdkSrc(clientId, namespace);
+    script.src = sdkSrc(clientId);
     script.async = true;
-    script.dataset.sxPaypal = namespace;
-    if (namespace !== "paypal") script.dataset.namespace = namespace;
+    script.dataset.sxPaypal = "paypal";
     script.onload = () => {
       const started = Date.now();
       const wait = () => {
-        if (apiFor(namespace)) {
+        if (window.paypal) {
           resolve();
           return;
         }
@@ -74,21 +81,8 @@ function loadOne(clientId: string, namespace: "paypal" | "paypalSaldo") {
   });
 }
 
-export function loadPaypalSdk(clientId: string) {
-  return loadOne(clientId, "paypal");
-}
-
-export function loadPaypalSaldoSdk(clientId: string) {
-  return loadOne(clientId, "paypalSaldo").catch(() => undefined);
-}
-
-export function paypalApi(method: PayMethod) {
-  if (method === "saldo") return window.paypalSaldo || window.paypal;
-  return window.paypal;
-}
-
-export function fundingFor(api: PaypalButtonsApi | undefined, method: PayMethod) {
-  const funding = api?.FUNDING;
+export function fundingFor(method: PayMethod) {
+  const funding = window.paypal?.FUNDING;
   if (!funding) return "paypal";
   if (method === "card") return funding.CARD;
   if (method === "googlepay") return funding.GOOGLEPAY || "googlepay";
@@ -96,7 +90,15 @@ export function fundingFor(api: PaypalButtonsApi | undefined, method: PayMethod)
 }
 
 export function landingFor(method: PayMethod) {
-  if (method === "saldo") return "LOGIN";
   if (method === "card") return "BILLING";
-  return "NO_PREFERENCE";
+  return "LOGIN";
+}
+
+export function paidCaptureId(details: PaypalCapture | undefined, expectedEur: number) {
+  const capture = details?.purchase_units?.[0]?.payments?.captures?.[0];
+  const status = capture?.status || details?.status;
+  const value = Number(capture?.amount?.value);
+  if (!capture?.id || status !== "COMPLETED") return "";
+  if (!Number.isFinite(value) || Math.abs(value - expectedEur) > 0.05) return "";
+  return capture.id;
 }

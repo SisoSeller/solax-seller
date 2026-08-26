@@ -548,6 +548,30 @@ a {
   padding: 28px 0 48px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.legal {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.legal h3 {
+  color: var(--text);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.legal p {
+  line-height: 1.5;
+}
+
+.legal a {
+  color: var(--gold);
+}
+
+.foot-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -747,7 +771,8 @@ a {
   .hero,
   .grid,
   .steps,
-  .trust-grid {
+  .trust-grid,
+  .legal {
     grid-template-columns: 1fr;
   }
 

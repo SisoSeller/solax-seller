@@ -4,6 +4,8 @@ import { asset } from "./paths";
 
 const USER_KEY = "sx-discord-user";
 const ORDERS_KEY = "sx-orders";
+const SOLD_KEY = "sx-sold-ids";
+export const CONTACT_EMAIL = "buzzitest7@gmail.com";
 
 export const EUR = new Intl.NumberFormat("it-IT", {
   style: "currency",
@@ -26,6 +28,15 @@ async function readJson<T>(url: string): Promise<T> {
   const text = (await res.text()).trim();
   if (!text) throw new Error("File vuoto");
   return JSON.parse(text) as T;
+}
+
+export function loadSoldIds(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SOLD_KEY) || "[]") as unknown;
+    return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchConfig(): Promise<ShopConfig> {
@@ -52,7 +63,10 @@ export async function fetchConfig(): Promise<ShopConfig> {
 
 export async function fetchItems() {
   const data = await readJson<{ items: ShopItem[] }>(asset("listings.json"));
-  return { items: (data.items || []).filter((item) => !item.sold) };
+  const sold = new Set(loadSoldIds());
+  return {
+    items: (data.items || []).filter((item) => !item.sold && !sold.has(item.id)),
+  };
 }
 
 export function loadUser(): DiscordUser | null {
@@ -219,6 +233,11 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order, payme
           { name: "Metodo", value: "PayPal / carta", inline: true },
           { name: "Speso", value: EUR.format(order.totalEur), inline: true },
           { name: "Cosa ha preso", value: items || "—", inline: false },
+          {
+            name: "Togli dal sito",
+            value: order.items.map((item) => item.id).join(", ") || "—",
+            inline: false,
+          },
           { name: "Dettagli pagamento", value: paymentNote || "Segnalato dal cliente", inline: false },
         ],
         timestamp: new Date().toISOString(),
@@ -258,6 +277,25 @@ export function saveSellKey(key: string) {
 
 export function loadSellKey() {
   return sessionStorage.getItem(SELL_KEY) || "";
+}
+
+export function rememberSoldIds(ids: string[]) {
+  const next = [...new Set([...loadSoldIds(), ...ids.filter(Boolean)])];
+  localStorage.setItem(SOLD_KEY, JSON.stringify(next));
+}
+
+export async function markItemsSold(ids: string[], sellKey: string) {
+  rememberSoldIds(ids);
+  if (!ids.length || window.location.protocol === "https:" || !sellKey) return;
+  const res = await fetch("/sold", {
+    method: "POST",
+    headers: { "x-sell-key": sellKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || "Annuncio non rimosso dal sito");
+  }
 }
 
 export async function removeItem(id: string, sellKey: string) {

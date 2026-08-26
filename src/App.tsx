@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CONTACT_EMAIL,
   EUR,
   VALUE,
   type ShopConfig,
@@ -13,6 +14,7 @@ import {
   loadUser,
   loginWithDiscord,
   logout,
+  markItemsSold,
   removeItem,
   saveSellKey,
   sendInvoiceWebhook,
@@ -20,7 +22,7 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset } from "./paths";
-import { fundingFor, landingFor, loadPaypalSdk, loadPaypalSaldoSdk, paypalApi, type PayMethod } from "./paypal";
+import { fundingFor, landingFor, loadPaypalSdk, paidCaptureId, type PayMethod } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 function payeeEmail(config: ShopConfig, order: Order) {
@@ -36,7 +38,6 @@ const PAY_BUTTONS: {
 }[] = [
   { id: "paypal-wallet", method: "paypal", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
   { id: "paypal-card", method: "card", style: { color: "black", shape: "rect", label: "pay", layout: "vertical" } },
-  { id: "paypal-saldo", method: "saldo", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
   { id: "paypal-gpay", method: "googlepay", style: { layout: "vertical", shape: "rect", label: "pay" } },
 ];
 
@@ -101,21 +102,16 @@ function PaypalCheckout({
         const email = payeeEmail(config, order);
         if (email) unit.payee = { email_address: email };
         let shown = 0;
+        let capturing = false;
         const renderOne = async (spec: (typeof PAY_BUTTONS)[number]) => {
-          if (gone) return;
-          if (spec.method === "saldo") await loadPaypalSaldoSdk(config.paypalClientId);
-          const api = paypalApi(spec.method);
-          if (!api) {
-            hidePaySlot(spec.id);
-            return;
-          }
-          if (spec.method === "googlepay" && !api.FUNDING?.GOOGLEPAY) {
+          if (gone || !window.paypal) return;
+          if (spec.method === "googlepay" && !window.paypal.FUNDING?.GOOGLEPAY) {
             hidePaySlot(spec.id);
             return;
           }
           try {
-            const button = api.Buttons({
-              fundingSource: fundingFor(api, spec.method),
+            const button = window.paypal.Buttons({
+              fundingSource: fundingFor(spec.method),
               style: spec.style,
               createOrder: (_data, actions) =>
                 actions.order.create({
@@ -127,9 +123,25 @@ function PaypalCheckout({
                   },
                 }),
               onApprove: async (_data, actions) => {
-                const details = await actions.order.capture();
-                paidRef.current(details.id || "paypal");
+                if (capturing) return;
+                capturing = true;
+                try {
+                  const details = await actions.order.capture();
+                  const captureId = paidCaptureId(details, order.totalEur);
+                  if (!captureId) {
+                    capturing = false;
+                    errorRef.current(
+                      "PayPal non ha preso i soldi. Il pagamento non e confermato.",
+                    );
+                    return;
+                  }
+                  paidRef.current(captureId);
+                } catch {
+                  capturing = false;
+                  errorRef.current("Pagamento non riuscito. Nessun addebito confermato.");
+                }
               },
+              onCancel: () => errorRef.current("Pagamento annullato."),
               onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
             });
             await renderWithTimeout(button.render(`#${spec.id}`), spec.method === "card" ? 12000 : 7000);
@@ -138,12 +150,8 @@ function PaypalCheckout({
             hidePaySlot(spec.id);
           }
         };
-        const paypalBtn = PAY_BUTTONS.find((btn) => btn.method === "paypal");
-        const cardBtn = PAY_BUTTONS.find((btn) => btn.method === "card");
-        const saldoBtn = PAY_BUTTONS.find((btn) => btn.method === "saldo");
+        await Promise.all(PAY_BUTTONS.filter((btn) => btn.method !== "googlepay").map(renderOne));
         const gpayBtn = PAY_BUTTONS.find((btn) => btn.method === "googlepay");
-        await Promise.all([paypalBtn && renderOne(paypalBtn), cardBtn && renderOne(cardBtn)]);
-        if (saldoBtn) await renderOne(saldoBtn);
         if (gpayBtn) await renderOne(gpayBtn);
         PAY_BUTTONS.forEach((spec) => {
           const slot = document.querySelector(`[data-pay="${spec.id}"]`);
@@ -179,10 +187,6 @@ function PaypalCheckout({
       </div>
       <div className="pay-slot" data-pay="paypal-card">
         <div id="paypal-card" />
-      </div>
-      <div className="pay-slot" data-pay="paypal-saldo">
-        <p className="pay-slot-label">PayPal saldo</p>
-        <div id="paypal-saldo" />
       </div>
       <div className="pay-slot" data-pay="paypal-gpay">
         <div id="paypal-gpay" />
@@ -304,23 +308,33 @@ export default function App() {
     setError("");
   }
 
-  async function onPaid(paymentNote: string) {
+  async function onPaid(captureId: string) {
     if (!order || !user) return;
     setBusy(true);
     setError("");
+    const paid: Order = {
+      ...order,
+      status: "paid",
+      paidAt: Date.now(),
+      paymentNote: `PayPal ${captureId}`,
+    };
+    const soldIds = paid.items.map((item) => item.id);
+    setItems((prev) => prev.filter((item) => !soldIds.includes(item.id)));
+    setCart((prev) => prev.filter((item) => !soldIds.includes(item.id)));
+    setActive((current) => (current && soldIds.includes(current.id) ? null : current));
+    setOrder(paid);
+    updateOrder(user, paid);
+    setOrders(loadOrders(user.id));
     try {
-      const paid: Order = {
-        ...order,
-        status: "paid",
-        paidAt: Date.now(),
-        paymentNote,
-      };
-      await sendInvoiceWebhook(config, paid, paymentNote);
-      updateOrder(user, paid);
-      setOrder(paid);
-      setOrders(loadOrders(user.id));
+      await markItemsSold(soldIds, sellKey);
+    } catch {
+      // L'annuncio sparisce comunque da questo browser; sul sito pubblico
+      // serve il push da sell-item.bat.
+    }
+    try {
+      await sendInvoiceWebhook(config, paid, paid.paymentNote || captureId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Verifica fallita");
+      setError(err instanceof Error ? err.message : "Pagato, ma il webhook Discord non e partito.");
     } finally {
       setBusy(false);
     }
@@ -471,7 +485,7 @@ export default function App() {
               <b>02</b>
               <h3>Paga il venditore</h3>
               <p>
-                Paghi con PayPal, saldo PayPal, carta o Google Pay. I soldi arrivano
+                Paghi con PayPal, carta o Google Pay. I soldi arrivano
                 subito allo shop.
               </p>
             </div>
@@ -497,21 +511,42 @@ export default function App() {
       </main>
 
       <footer className="wrap foot">
-        <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
-        <a className="discord-join" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
-          Unisciti al Discord
-        </a>
-        {user && (
-          <button
-            className="linkish"
-            onClick={() => {
-              logout();
-              setUser(null);
-            }}
-          >
-            Esci da Discord
-          </button>
-        )}
+        <div className="legal" id="privacy">
+          <section>
+            <h3>Privacy e contatto</h3>
+            <p>
+              Per gli ordini usiamo il tuo Discord (nome e ID) e i dati del
+              pagamento. Non vendiamo i dati a terzi. Contatto shop:{" "}
+              <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
+            </p>
+          </section>
+          <section>
+            <h3>Rimborsi</h3>
+            <p>
+              I rimborsi non si fanno. Dopo il pagamento l&apos;ordine è chiuso: armi
+              MM2 e account sono digitali, non si restituiscono. Pagando accetti
+              questa regola. Per problemi scrivi a{" "}
+              <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
+            </p>
+          </section>
+        </div>
+        <div className="foot-row">
+          <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
+          <a className="discord-join" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+            Unisciti al Discord
+          </a>
+          {user && (
+            <button
+              className="linkish"
+              onClick={() => {
+                logout();
+                setUser(null);
+              }}
+            >
+              Esci da Discord
+            </button>
+          )}
+        </div>
       </footer>
 
       {cartOpen && (
@@ -688,13 +723,13 @@ export default function App() {
                 <div className="pay-box">
                   <h3>Paga con PayPal o carta</h3>
                   <p>
-                    PayPal, PayPal saldo, carta o Google Pay. I soldi arrivano subito
-                    allo shop. La fattura la vedi dopo il pagamento.
+                    PayPal, carta o Google Pay. I soldi arrivano subito allo shop.
+                    La fattura la vedi dopo il pagamento. Nessun rimborso.
                   </p>
                   <PaypalCheckout
                     config={config}
                     order={order}
-                    onPaid={(captureId) => onPaid(`PayPal ${captureId}`)}
+                    onPaid={onPaid}
                     onError={setError}
                   />
                 </div>

@@ -11,6 +11,7 @@ export default defineConfig({
       "/publish": "http://127.0.0.1:8787",
       "/remove": "http://127.0.0.1:8787",
       "/health": "http://127.0.0.1:8787",
+      "/sold": "http://127.0.0.1:8787",
     },
   },
   build: {
