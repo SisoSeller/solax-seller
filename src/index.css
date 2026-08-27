@@ -888,6 +888,29 @@ a {
   gap: 12px;
 }
 
+.paypal-sdk-wrap {
+  position: relative;
+  width: 100%;
+  height: 45px;
+}
+
+.paypal-sdk-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0.02;
+  overflow: hidden;
+}
+
+.paypal-sdk-wrap.is-fallback .paypal-sdk-hit {
+  pointer-events: none;
+}
+
+.paypal-sdk-wrap.is-fallback .paypal-sdk-face {
+  pointer-events: auto;
+  z-index: 3;
+}
+
 .paypal-hosted-btn {
   box-sizing: border-box;
   width: 100%;
@@ -905,6 +928,13 @@ a {
   letter-spacing: -0.2px;
   line-height: 1;
   transition: background-color 0.12s ease;
+}
+
+.paypal-sdk-face {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .paypal-hosted-btn:focus-visible {

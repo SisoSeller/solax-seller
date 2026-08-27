@@ -19,7 +19,7 @@ powershell -NoProfile -Command "Compress-Archive -Path 'index.js','paypal-orders
 echo.
 echo ZIP pronto: jinius-discloud.zip
 echo Nel .env del bot metti PAYPAL_CLIENT_ID e PAYPAL_CLIENT_SECRET Live
-echo Su Discloud crea il sottodominio jinius - poi: Applications - Upload ZIP
+echo Su Discloud: Applications - Upload ZIP (tipo bot, non sito)
 echo.
-start "" "https://discloud.app/"
+start "" "https://discloud.com/dashboard"
 pause

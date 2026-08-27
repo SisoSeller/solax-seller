@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   CONTACT_EMAIL,
   EUR,
@@ -25,7 +25,13 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset, siteOriginPath } from "./paths";
-import { paidCaptureId, paypalEndpoint } from "./paypal";
+import {
+  loadPaypalSdk,
+  paidCaptureId,
+  paypalEndpoint,
+  paypalReturnReceipt,
+  startPaypalHostedCheckout,
+} from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 function payeeEmail(config: ShopConfig, order: Order) {
@@ -79,47 +85,114 @@ function PaypalCheckout({
   config,
   order,
   onError,
+  onPaid,
 }: {
   config: ShopConfig;
   order: Order;
   onError: (message: string) => void;
+  onPaid: (captureId: string) => Promise<void> | void;
 }) {
-  const [busyPay, setBusyPay] = useState(false);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const onErrorRef = useRef(onError);
+  const onPaidRef = useRef(onPaid);
+  onErrorRef.current = onError;
+  onPaidRef.current = onPaid;
+  const [sdkReady, setSdkReady] = useState(false);
   const email = payeeEmail(config, order);
+  const itemLabel = order.items.map((item) => item.name).join(", ");
 
-  async function goPayPal() {
-    if (busyPay) return;
-    setBusyPay(true);
-    onError("");
+  function goHosted() {
+    if (!email) return;
     savePendingPaypal(order);
-    try {
-      const here = siteOriginPath();
-      const res = await fetch(paypalEndpoint(config.paypalApiUrl, "create"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: order.totalEur,
-          invoice: order.invoice,
-          returnUrl: `${here}?paypal_token=1&invoice=${encodeURIComponent(order.invoice)}`,
-          cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(order.invoice)}`,
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        id?: string;
-        approve?: string;
-        error?: string;
-      };
-      if (!res.ok || !data.id) {
-        throw new Error(data.error || "PayPal non ha creato il token");
-      }
-      sessionStorage.setItem(PP_ORDER_KEY, data.id);
-      window.location.href =
-        data.approve || `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(data.id)}`;
-    } catch (err) {
-      setBusyPay(false);
-      onError(err instanceof Error ? err.message : "PayPal non disponibile");
-    }
+    const here = siteOriginPath();
+    startPaypalHostedCheckout({
+      email,
+      amount: order.totalEur,
+      invoice: order.invoice,
+      itemName: itemLabel || "SX",
+      returnUrl: `${here}?paypal_return=1&invoice=${encodeURIComponent(order.invoice)}`,
+      cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(order.invoice)}`,
+    });
   }
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!config.paypalClientId || !email || !host) return;
+    let closed = false;
+    let buttons: { close?: () => Promise<void> | void } | null = null;
+    savePendingPaypal(order);
+    setSdkReady(false);
+
+    void (async () => {
+      try {
+        await loadPaypalSdk(config.paypalClientId);
+        if (closed || !window.paypal) return;
+        const instance = window.paypal.Buttons({
+          fundingSource: window.paypal.FUNDING?.PAYPAL,
+          style: {
+            layout: "horizontal",
+            color: "gold",
+            shape: "pill",
+            label: "paypal",
+            height: 45,
+            tagline: false,
+          },
+          createOrder: (_data, actions) =>
+            actions.order.create({
+              purchase_units: [
+                {
+                  invoice_id: order.invoice,
+                  custom_id: order.invoice,
+                  description: (itemLabel || "SX").slice(0, 127),
+                  amount: {
+                    currency_code: "EUR",
+                    value: order.totalEur.toFixed(2),
+                  },
+                  payee: { email_address: email },
+                },
+              ],
+              application_context: {
+                shipping_preference: "NO_SHIPPING",
+                user_action: "PAY_NOW",
+                brand_name: "SX",
+              },
+            }),
+          onApprove: async (_data, actions) => {
+            const details = await actions.order.capture();
+            const captureId = paidCaptureId(details, order.totalEur);
+            if (!captureId) {
+              onErrorRef.current("PayPal non ha confermato l'addebito");
+              return;
+            }
+            await onPaidRef.current(captureId);
+          },
+          onCancel: () => onErrorRef.current("Pagamento annullato."),
+          onError: () => onErrorRef.current("PayPal non disponibile. Riprova."),
+        });
+        if (instance.isEligible && !instance.isEligible()) return;
+        await instance.render(host);
+        if (closed) {
+          await instance.close?.();
+          return;
+        }
+        buttons = instance;
+        setSdkReady(true);
+      } catch {
+        if (!closed) setSdkReady(false);
+      }
+    })();
+
+    return () => {
+      closed = true;
+      setSdkReady(false);
+      try {
+        void buttons?.close?.();
+      } catch {
+        /* ignore */
+      }
+      host.innerHTML = "";
+    };
+  }, [config.paypalClientId, email, itemLabel, order]);
 
   if (!email) {
     return (
@@ -130,18 +203,18 @@ function PaypalCheckout({
   }
   return (
     <div className="paypal-hosted">
-      <button
-        type="button"
-        className="paypal-hosted-btn paypal-hosted-gold"
-        onClick={() => void goPayPal()}
-        disabled={busyPay}
-        aria-label="PayPal"
-      >
-        <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
-      </button>
-      <p className="paypal-hosted-note">
-        {busyPay ? "Apro PayPal..." : "Paga con PayPal. Poi torna qui per la ricevuta."}
-      </p>
+      <div className={`paypal-sdk-wrap${sdkReady ? "" : " is-fallback"}`}>
+        <button
+          type="button"
+          className="paypal-hosted-btn paypal-hosted-gold paypal-sdk-face"
+          onClick={goHosted}
+          aria-label="PayPal"
+        >
+          <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
+        </button>
+        <div ref={hostRef} className="paypal-sdk-hit" />
+      </div>
+      <p className="paypal-hosted-note">Paga con PayPal. Poi torna qui per la ricevuta.</p>
     </div>
   );
 }
@@ -316,20 +389,50 @@ export default function App() {
       return;
     }
 
+    const pending = loadPendingPaypal();
+    const invoice = params.get("invoice") || pending?.invoice || "";
+
+    if (params.get("paypal_return") === "1") {
+      if (paypalResumeBusy) return;
+      paypalResumeBusy = true;
+      if (!pending || (invoice && pending.invoice !== invoice)) {
+        paypalResumeBusy = false;
+        cleanPaypalQuery();
+        setError("Ordine PayPal non trovato. Se hai già pagato, apri il ticket Discord.");
+        return;
+      }
+      const receipt = paypalReturnReceipt(params, pending.totalEur);
+      cleanPaypalQuery();
+      setOrder(pending);
+      setCheckingOut(true);
+      if (!receipt.ok) {
+        paypalResumeBusy = false;
+        if (receipt.reason === "pending") {
+          setError("Pagamento in attesa su PayPal. Aspetta la conferma, poi apri il ticket.");
+          return;
+        }
+        setError("PayPal non ha confermato l'addebito.");
+        return;
+      }
+      void completePaid(pending, receipt.tx || `PP-${pending.invoice}`).finally(() => {
+        paypalResumeBusy = false;
+      });
+      return;
+    }
+
     const orderID = params.get("token") || sessionStorage.getItem(PP_ORDER_KEY) || "";
     const cameFromPaypal =
       params.get("paypal_token") === "1" || Boolean(params.get("PayerID") && orderID);
-    if (!cameFromPaypal || !orderID) return;
+    const captureUrl = paypalEndpoint(config.paypalApiUrl, "capture");
+    if (!cameFromPaypal || !orderID || !captureUrl) return;
     if (paypalResumeBusy) return;
     paypalResumeBusy = true;
 
-    const pending = loadPendingPaypal();
-    const invoice = params.get("invoice") || pending?.invoice || "";
     const savedToken = sessionStorage.getItem(PP_ORDER_KEY) || "";
     if (!pending || (invoice && pending.invoice !== invoice) || (savedToken && savedToken !== orderID)) {
       paypalResumeBusy = false;
       cleanPaypalQuery();
-      setError("Ordine PayPal non trovato. Se hai gia pagato, apri il ticket Discord.");
+      setError("Ordine PayPal non trovato. Se hai già pagato, apri il ticket Discord.");
       return;
     }
 
@@ -341,7 +444,7 @@ export default function App() {
 
     void (async () => {
       try {
-        const res = await fetch(paypalEndpoint(config.paypalApiUrl, "capture"), {
+        const res = await fetch(captureUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -770,12 +873,13 @@ export default function App() {
                   <h3>Paga con PayPal</h3>
                   <p>
                     Completa il pagamento sul tuo PayPal. I soldi partono
-                    con il token, poi torna qui e vedi la ricevuta. Nessun rimborso.
+                    subito, poi vedi la ricevuta qui. Nessun rimborso.
                   </p>
                   <PaypalCheckout
                     config={config}
                     order={order}
                     onError={setError}
+                    onPaid={(captureId) => completePaid(order, captureId)}
                   />
                 </div>
                 {error && <p className="err">{error}</p>}

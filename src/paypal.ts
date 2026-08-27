@@ -63,7 +63,7 @@ type PaypalButtonsApi = {
   FUNDING?: { PAYPAL: string; CARD: string; GOOGLEPAY?: string };
   Buttons: (opts: {
     fundingSource?: string;
-    style?: Record<string, string>;
+    style?: Record<string, string | number | boolean>;
     createOrder: (
       data: unknown,
       actions: { order: { create: (body: unknown) => Promise<string> } },
@@ -75,7 +75,9 @@ type PaypalButtonsApi = {
     onCancel?: () => void;
     onError?: (err: unknown) => void;
   }) => {
-    render: (selector: string) => Promise<void>;
+    isEligible?: () => boolean;
+    render: (selector: string | HTMLElement) => Promise<void>;
+    close?: () => Promise<void> | void;
   };
 };
 
@@ -92,7 +94,7 @@ function sdkSrc(clientId: string) {
     intent: "capture",
     components: "buttons",
     "enable-funding": "paypal",
-    "disable-funding": "card,credit,paylater",
+    "disable-funding": "card,credit,paylater,venmo",
   });
   return `https://www.paypal.com/sdk/js?${params.toString()}`;
 }
