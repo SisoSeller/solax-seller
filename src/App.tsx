@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   CONTACT_EMAIL,
   EUR,
@@ -25,17 +25,7 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset, siteOriginPath } from "./paths";
-import {
-  fundingFor,
-  loadPaypalSdk,
-  logoutThenPaypal,
-  paidCaptureId,
-  paypalEndpoint,
-  paypalReturnReceipt,
-  paypalServerReady,
-  startPaypalHostedCheckout,
-  type PayMethod,
-} from "./paypal";
+import { paidCaptureId, paypalEndpoint } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 function payeeEmail(config: ShopConfig, order: Order) {
@@ -44,36 +34,8 @@ function payeeEmail(config: ShopConfig, order: Order) {
   return fromItem?.paypal || "";
 }
 
-function beginHostedPay(config: ShopConfig, source: Order) {
-  const payTo = payeeEmail(config, source);
-  if (!payTo) return false;
-  const here = siteOriginPath();
-  startPaypalHostedCheckout({
-    email: payTo,
-    amount: source.totalEur,
-    invoice: source.invoice,
-    itemName: source.items.map((item) => item.name).join(", ") || `SX ${source.invoice}`,
-    returnUrl: `${here}?paypal_return=1&invoice=${encodeURIComponent(source.invoice)}`,
-    cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(source.invoice)}`,
-  });
-  return true;
-}
-
-const PAY_BUTTONS: {
-  id: string;
-  method: PayMethod;
-  style: Record<string, string>;
-}[] = [
-  { id: "paypal-wallet", method: "paypal", style: { color: "gold", shape: "pill", label: "paypal", layout: "vertical" } },
-];
-
-function hidePaySlot(id: string) {
-  const slot = document.querySelector<HTMLElement>(`[data-pay="${id}"]`);
-  if (slot) slot.hidden = true;
-}
-
+const PP_ORDER_KEY = "sx-pp-order";
 const finishingInvoices = new Set<string>();
-const PAYPAL_BUYER_OK = "sx-pp-buyer";
 let paypalResumeBusy = false;
 
 function buyerFromOrder(order: Order, user: DiscordUser | null): DiscordUser {
@@ -92,6 +54,7 @@ function cleanPaypalQuery() {
   const url = new URL(window.location.href);
   [
     "paypal_go",
+    "paypal_token",
     "paypal_return",
     "paypal_cancel",
     "invoice",
@@ -107,163 +70,55 @@ function cleanPaypalQuery() {
     "sig",
     "auth",
     "token",
+    "PayerID",
   ].forEach((key) => url.searchParams.delete(key));
   window.history.replaceState({}, "", url);
-}
-
-function renderWithTimeout(render: Promise<void>, ms = 7000) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error("timeout")), ms);
-    render.then(
-      () => {
-        window.clearTimeout(timer);
-        resolve();
-      },
-      (err) => {
-        window.clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
 }
 
 function PaypalCheckout({
   config,
   order,
-  onPaid,
   onError,
 }: {
   config: ShopConfig;
   order: Order;
-  onPaid: (captureId: string) => void;
   onError: (message: string) => void;
 }) {
-  const paidRef = useRef(onPaid);
-  const errorRef = useRef(onError);
-  paidRef.current = onPaid;
-  errorRef.current = onError;
-  const [mode, setMode] = useState<"loading" | "sdk" | "hosted">("loading");
+  const [busyPay, setBusyPay] = useState(false);
   const email = payeeEmail(config, order);
 
-  useEffect(() => {
-    let gone = false;
-    paypalServerReady(config.paypalApiUrl).then((ok) => {
-      if (!gone) setMode(ok && config.paypalClientId ? "sdk" : "hosted");
-    });
-    return () => {
-      gone = true;
-    };
-  }, [config.paypalApiUrl, config.paypalClientId]);
-
-  useEffect(() => {
-    if (mode !== "sdk" || !config.paypalClientId) return;
-    const hosts = PAY_BUTTONS.map((btn) => document.getElementById(btn.id));
-    if (hosts.some((host) => !host)) return;
-    hosts.forEach((host) => {
-      host!.innerHTML = "";
-    });
-    PAY_BUTTONS.forEach((btn) => {
-      const slot = document.querySelector<HTMLElement>(`[data-pay="${btn.id}"]`);
-      if (slot) slot.hidden = false;
-    });
-    let gone = false;
-    loadPaypalSdk(config.paypalClientId)
-      .then(async () => {
-        if (gone) return;
-        errorRef.current("");
-        let shown = 0;
-        let capturing = false;
-        const renderOne = async (spec: (typeof PAY_BUTTONS)[number]) => {
-          if (gone || !window.paypal) return;
-          try {
-            const button = window.paypal.Buttons({
-              fundingSource: fundingFor(spec.method),
-              style: spec.style,
-              createOrder: async () => {
-                const res = await fetch(paypalEndpoint(config.paypalApiUrl, "create"), {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ invoice: order.invoice, amount: order.totalEur }),
-                });
-                const data = (await res.json().catch(() => ({}))) as { id?: string; error?: string };
-                if (!res.ok || !data.id) throw new Error(data.error || "PayPal create fallito");
-                return data.id;
-              },
-              onApprove: async (data) => {
-                if (capturing) return;
-                capturing = true;
-                try {
-                  const rec = data as { orderID?: string; orderId?: string };
-                  const orderID = rec.orderID || rec.orderId || "";
-                  const res = await fetch(paypalEndpoint(config.paypalApiUrl, "capture"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      orderID,
-                      amount: order.totalEur,
-                      invoice: order.invoice,
-                    }),
-                  });
-                  const captured = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    capturing = false;
-                    errorRef.current(
-                      (captured as { error?: string }).error ||
-                        "PayPal non ha preso i soldi. Il pagamento non e confermato.",
-                    );
-                    return;
-                  }
-                  const captureId = paidCaptureId(captured, order.totalEur);
-                  if (!captureId) {
-                    capturing = false;
-                    errorRef.current("PayPal non ha preso i soldi. Il pagamento non e confermato.");
-                    return;
-                  }
-                  paidRef.current(captureId);
-                } catch {
-                  capturing = false;
-                  errorRef.current("Pagamento non riuscito. Nessun addebito confermato.");
-                }
-              },
-              onCancel: () => errorRef.current("Pagamento annullato."),
-              onError: () => errorRef.current("Pagamento PayPal non riuscito. Riprova."),
-            });
-            await renderWithTimeout(button.render(`#${spec.id}`));
-            shown += 1;
-          } catch {
-            hidePaySlot(spec.id);
-          }
-        };
-        await Promise.all(PAY_BUTTONS.map(renderOne));
-        PAY_BUTTONS.forEach((spec) => {
-          const slot = document.querySelector(`[data-pay="${spec.id}"]`);
-          if (slot && slot.querySelectorAll("iframe").length === 0) hidePaySlot(spec.id);
-        });
-        if (!gone && shown === 0) errorRef.current("Impossibile caricare PayPal.");
-      })
-      .catch(() => {
-        if (!gone) setMode("hosted");
-      });
-    return () => {
-      gone = true;
-      hosts.forEach((host) => {
-        host!.innerHTML = "";
-      });
-    };
-  }, [mode, config.paypalApiUrl, config.paypalClientId, config.paypalEmail, order.invoice, order.totalEur]);
-
-  function goHosted() {
-    if (!email) {
-      onError("Manca l'email PayPal dello shop.");
-      return;
-    }
+  async function goPayPal() {
+    if (busyPay) return;
+    setBusyPay(true);
+    onError("");
     savePendingPaypal(order);
-    if (sessionStorage.getItem(PAYPAL_BUYER_OK) === "1") {
-      beginHostedPay(config, order);
-      return;
+    try {
+      const here = siteOriginPath();
+      const res = await fetch(paypalEndpoint(config.paypalApiUrl, "create"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: order.totalEur,
+          invoice: order.invoice,
+          returnUrl: `${here}?paypal_token=1&invoice=${encodeURIComponent(order.invoice)}`,
+          cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(order.invoice)}`,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        approve?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.id) {
+        throw new Error(data.error || "PayPal non ha creato il token");
+      }
+      sessionStorage.setItem(PP_ORDER_KEY, data.id);
+      window.location.href =
+        data.approve || `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(data.id)}`;
+    } catch (err) {
+      setBusyPay(false);
+      onError(err instanceof Error ? err.message : "PayPal non disponibile");
     }
-    const here = siteOriginPath();
-    logoutThenPaypal(`${here}?paypal_go=1&invoice=${encodeURIComponent(order.invoice)}`);
   }
 
   if (!email) {
@@ -273,26 +128,20 @@ function PaypalCheckout({
       </p>
     );
   }
-  if (mode === "loading") {
-    return <p style={{ color: "var(--muted)" }}>Carico PayPal...</p>;
-  }
-  if (mode === "hosted") {
-    return (
-      <div className="paypal-hosted">
-        <button type="button" className="paypal-hosted-btn paypal-hosted-gold" onClick={goHosted} aria-label="PayPal">
-          <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
-        </button>
-        <p className="paypal-hosted-note">
-          Accedi con il tuo PayPal, non con {email}.
-        </p>
-      </div>
-    );
-  }
   return (
-    <div className="paypal-buttons">
-      <div className="pay-slot" data-pay="paypal-wallet">
-        <div id="paypal-wallet" />
-      </div>
+    <div className="paypal-hosted">
+      <button
+        type="button"
+        className="paypal-hosted-btn paypal-hosted-gold"
+        onClick={() => void goPayPal()}
+        disabled={busyPay}
+        aria-label="PayPal"
+      >
+        <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
+      </button>
+      <p className="paypal-hosted-note">
+        {busyPay ? "Apro PayPal..." : "Paga con PayPal. Poi torna qui per la ricevuta."}
+      </p>
     </div>
   );
 }
@@ -457,67 +306,68 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (!config.paypalEmail && !config.discordWebhookUrl) return;
+    if (!config.paypalEmail && !config.discordWebhookUrl && !config.paypalApiUrl) return;
 
-    if (params.get("paypal_go") === "1") {
-      const pending = loadPendingPaypal();
-      const invoice = params.get("invoice") || pending?.invoice || "";
-      if (!pending || (invoice && pending.invoice !== invoice)) {
-        cleanPaypalQuery();
-        setError("Ordine PayPal non trovato. Riprova a pagare.");
-        return;
-      }
-      if (paypalResumeBusy) return;
-      paypalResumeBusy = true;
-      sessionStorage.setItem(PAYPAL_BUYER_OK, "1");
-      cleanPaypalQuery();
-      if (!beginHostedPay(config, pending)) {
-        paypalResumeBusy = false;
-        setError("Manca l'email PayPal dello shop.");
-      }
-      return;
-    }
-
-    const pdtPaid =
-      Boolean(params.get("tx") || params.get("txn_id")) ||
-      (params.get("st") || params.get("payment_status") || "").toUpperCase() === "COMPLETED";
-    const cameBack = params.get("paypal_return") === "1" || pdtPaid;
-    const cancelled = params.get("paypal_cancel") === "1";
-    if (!cameBack && !cancelled) return;
-
-    if (cancelled) {
+    if (params.get("paypal_cancel") === "1") {
+      sessionStorage.removeItem(PP_ORDER_KEY);
       clearPendingPaypal();
       cleanPaypalQuery();
       setError("Pagamento annullato.");
       return;
     }
 
+    const orderID = params.get("token") || sessionStorage.getItem(PP_ORDER_KEY) || "";
+    const cameFromPaypal =
+      params.get("paypal_token") === "1" || Boolean(params.get("PayerID") && orderID);
+    if (!cameFromPaypal || !orderID) return;
+    if (paypalResumeBusy) return;
+    paypalResumeBusy = true;
+
     const pending = loadPendingPaypal();
     const invoice = params.get("invoice") || pending?.invoice || "";
-    if (!pending || (invoice && pending.invoice !== invoice)) {
+    const savedToken = sessionStorage.getItem(PP_ORDER_KEY) || "";
+    if (!pending || (invoice && pending.invoice !== invoice) || (savedToken && savedToken !== orderID)) {
+      paypalResumeBusy = false;
       cleanPaypalQuery();
       setError("Ordine PayPal non trovato. Se hai gia pagato, apri il ticket Discord.");
       return;
     }
 
-    const receipt = paypalReturnReceipt(params, pending.totalEur);
-    if (!receipt.ok) {
-      cleanPaypalQuery();
-      if (receipt.reason === "pending") {
-        setError("PayPal ha il pagamento in attesa. La fattura parte quando e completato.");
-        return;
-      }
-      if (receipt.reason === "amount") {
-        setError("Importo PayPal diverso dall'ordine. Il pagamento non e confermato.");
-        return;
-      }
-      setError("PayPal non ha confermato il pagamento.");
-      return;
-    }
-
-    const captureId = receipt.tx || `host-${pending.invoice}`;
+    setOrder(pending);
+    setCheckingOut(true);
+    setBusy(true);
+    setError("");
     cleanPaypalQuery();
-    void completePaid(pending, captureId);
+
+    void (async () => {
+      try {
+        const res = await fetch(paypalEndpoint(config.paypalApiUrl, "capture"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            orderID,
+            amount: pending.totalEur,
+            invoice: pending.invoice,
+          }),
+        });
+        const captured = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(
+            (captured as { error?: string }).error || "PayPal non ha preso i soldi",
+          );
+        }
+        const captureId = paidCaptureId(captured, pending.totalEur);
+        if (!captureId) {
+          throw new Error("PayPal non ha confermato l'addebito");
+        }
+        sessionStorage.removeItem(PP_ORDER_KEY);
+        await completePaid(pending, captureId);
+      } catch (err) {
+        paypalResumeBusy = false;
+        setBusy(false);
+        setError(err instanceof Error ? err.message : "Pagamento non confermato");
+      }
+    })();
   }, [config, user]);
 
   return (
@@ -566,7 +416,7 @@ export default function App() {
       <main>
         <section className="wrap hero">
           <div>
-            <div className="kicker">Murder Mystery 2 · Sempre online</div>
+            <div className="kicker">Murder Mystery 2 Â· Sempre online</div>
             <h1>
               COMPRA ARMI
               <br />
@@ -619,7 +469,7 @@ export default function App() {
                   </div>
                   <h3>{item.name}</h3>
                   <p className="stock">
-                    value {VALUE.format(item.value)} · {item.sellerName}
+                    value {VALUE.format(item.value)} Â· {item.sellerName}
                   </p>
                   <div className="row">
                     <strong>{EUR.format(item.price)}</strong>
@@ -711,7 +561,7 @@ export default function App() {
           </section>
         </div>
         <div className="foot-row">
-          <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
+          <p>Â© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
           <a className="discord-join" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
             Unisciti al Discord
           </a>
@@ -809,7 +659,7 @@ export default function App() {
                 >
                   <strong>{o.status === "paid" ? o.invoice : "Da pagare"}</strong>
                   <p>
-                    {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)}
+                    {o.items.map((i) => i.name).join(", ")} Â· {EUR.format(o.totalEur)}
                   </p>
                   <small>{o.status === "paid" ? "Pagato" : "In attesa pagamento"}</small>
                 </button>
@@ -831,7 +681,7 @@ export default function App() {
             </div>
             <img className="modal-photo" src={asset(active.image)} alt="" />
             <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
-              value {VALUE.format(active.value)} · venduto da {active.sellerName}
+              value {VALUE.format(active.value)} Â· venduto da {active.sellerName}
             </p>
             <div className="row">
               <div className="price">{EUR.format(active.price)}</div>
@@ -864,14 +714,30 @@ export default function App() {
         <>
           <div className="overlay" onClick={() => !busy && setCheckingOut(false)} />
           <div className="modal">
-            {order?.status === "paid" ? (
+            {busy && order?.status !== "paid" ? (
+              <div className="success">
+                <div className="kicker">PayPal</div>
+                <h2>Confermo il pagamento</h2>
+                <p style={{ color: "var(--muted)", marginTop: 10 }}>
+                  Token ricevuto. Sto inviando i soldi e preparo la ricevuta.
+                </p>
+              </div>
+            ) : order?.status === "paid" ? (
               <div className="success">
                 <div className="kicker">Pagamento ok</div>
-                <h2>La tua fattura</h2>
+                <h2>La tua ricevuta</h2>
                 <p style={{ color: "var(--muted)", marginTop: 10 }}>
-                  Questo codice è la prova del pagamento. Mandalo nel ticket Discord.
+                  I soldi sono stati inviati. Questa è la ricevuta: mandala nel ticket Discord.
                 </p>
                 <code className="invoice-code">{order.invoice}</code>
+                {order.paymentNote && (
+                  <p style={{ color: "var(--muted)", marginTop: 12, fontSize: 13 }}>
+                    {order.paymentNote}
+                  </p>
+                )}
+                <p style={{ marginTop: 8 }}>
+                  <b>{EUR.format(order.totalEur)}</b>
+                </p>
                 {(config.discordTicketUrl || DISCORD_INVITE) && (
                   <a
                     className="btn btn-primary"
@@ -903,14 +769,12 @@ export default function App() {
                 <div className="pay-box">
                   <h3>Paga con PayPal</h3>
                   <p>
-                    Completa il pagamento con il tuo account PayPal, non con
-                    quello dello shop. I soldi arrivano allo shop. La fattura la
-                    vedi dopo. Nessun rimborso.
+                    Completa il pagamento sul tuo PayPal. I soldi partono
+                    con il token, poi torna qui e vedi la ricevuta. Nessun rimborso.
                   </p>
                   <PaypalCheckout
                     config={config}
                     order={order}
-                    onPaid={(captureId) => void completePaid(order, captureId)}
                     onError={setError}
                   />
                 </div>
@@ -1074,7 +938,7 @@ export function SellPage() {
         </div>
       </header>
       <main className="wrap sell-page">
-        <div className="kicker">sell-item.bat · non chiudere la finestra nera</div>
+        <div className="kicker">sell-item.bat Â· non chiudere la finestra nera</div>
         <h1>Metti in vendita</h1>
         {!key && <p className="err">Apri questa pagina con un doppio clic su sell-item.bat.</p>}
         {error && <p className="err">{error}</p>}

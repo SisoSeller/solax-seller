@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import express from "express";
 import multer from "multer";
-import { paypalCaptureOrder, paypalCreateOrder } from "./paypal-orders.mjs";
+import { paypalApproveUrl, paypalCaptureOrder, paypalCreateOrder } from "./paypal-orders.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(ROOT, ".env") });
@@ -240,8 +240,10 @@ app.post("/paypal/create", async (req, res) => {
       amount,
       invoice,
       payee,
+      returnUrl: String(req.body?.returnUrl || "").trim(),
+      cancelUrl: String(req.body?.cancelUrl || "").trim(),
     });
-    res.json({ id: order.id });
+    res.json({ id: order.id, approve: paypalApproveUrl(order) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "PayPal create fallito" });
   }

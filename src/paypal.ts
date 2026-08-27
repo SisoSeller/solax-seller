@@ -161,10 +161,10 @@ export function paypalReturnReceipt(params: URLSearchParams, expectedEur: number
 }
 
 export function paypalEndpoint(apiUrl: string, path: string) {
+  if (window.location.protocol !== "https:") return `/paypal/${path}`;
   const base = (apiUrl || "").replace(/\/$/, "");
   if (base) return `${base}/paypal/${path}`;
-  if (window.location.protocol === "https:") return "";
-  return `/paypal/${path}`;
+  return "";
 }
 
 export async function paypalServerReady(apiUrl: string) {
