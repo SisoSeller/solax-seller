@@ -1,20 +1,6 @@
 {
   "items": [
     {
-      "id": "itm-mtaly5hg",
-      "name": "account manu",
-      "price": 0.05,
-      "value": 200000,
-      "image": "listings/itm-mtaly5hg.png",
-      "paypal": "buzzitest7@gmail.com",
-      "roblox": "",
-      "robuxPrice": 0,
-      "sellerDiscordId": "",
-      "sellerName": "SX",
-      "sold": false,
-      "createdAt": 1787779824966
-    },
-    {
       "id": "itm-mtakjjre",
       "name": "Ice Cream",
       "price": 4.9,
