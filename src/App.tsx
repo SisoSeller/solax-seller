@@ -1,220 +1,137 @@
-﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   CONTACT_EMAIL,
   EUR,
   VALUE,
   type ShopConfig,
-  clearPendingPaypal,
   completeDiscordLogin,
   createOrder,
   fetchConfig,
   fetchItems,
+  fetchPublicIp,
   listItem,
   loadOrders,
-  loadPendingPaypal,
   loadSellKey,
   loadUser,
   loginWithDiscord,
   logout,
-  markItemsSold,
   removeItem,
-  savePendingPaypal,
   saveSellKey,
   sendInvoiceWebhook,
   updateOrder,
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset, siteOriginPath } from "./paths";
-import {
-  loadPaypalSdk,
-  paidCaptureId,
-  paypalEndpoint,
-  paypalReturnReceipt,
-  startPaypalHostedCheckout,
-} from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
-function payeeEmail(config: ShopConfig, order: Order) {
-  if (config.paypalEmail.includes("@")) return config.paypalEmail;
-  const fromItem = order.items.find((item) => item.paypal.includes("@"));
-  return fromItem?.paypal || "";
+const OPEN_INVOICE_KEY = "sx-open-invoice";
+
+function rememberOpenInvoice(invoice: string) {
+  if (invoice) sessionStorage.setItem(OPEN_INVOICE_KEY, invoice);
 }
 
-const PP_ORDER_KEY = "sx-pp-order";
-const finishingInvoices = new Set<string>();
-let paypalResumeBusy = false;
-
-function buyerFromOrder(order: Order, user: DiscordUser | null): DiscordUser {
-  if (user && user.id === order.buyerDiscordId) return user;
-  const saved = loadUser();
-  if (saved && saved.id === order.buyerDiscordId) return saved;
-  return {
-    id: order.buyerDiscordId,
-    username: order.buyerUsername,
-    tag: order.buyerUsername,
-    avatar: "",
-  };
+function takeRememberedInvoice() {
+  const fromUrl = (new URLSearchParams(window.location.search).get("fattura") || "").trim();
+  const saved = (sessionStorage.getItem(OPEN_INVOICE_KEY) || "").trim();
+  return fromUrl || saved;
 }
 
-function cleanPaypalQuery() {
+function clearOpenInvoice() {
+  sessionStorage.removeItem(OPEN_INVOICE_KEY);
   const url = new URL(window.location.href);
-  [
-    "paypal_go",
-    "paypal_token",
-    "paypal_return",
-    "paypal_cancel",
-    "invoice",
-    "st",
-    "amt",
-    "cc",
-    "cm",
-    "tx",
-    "txn_id",
-    "payment_status",
-    "mc_gross",
-    "item_number",
-    "sig",
-    "auth",
-    "token",
-    "PayerID",
-  ].forEach((key) => url.searchParams.delete(key));
-  window.history.replaceState({}, "", url);
+  if (url.searchParams.has("fattura")) {
+    url.searchParams.delete("fattura");
+    window.history.replaceState({}, "", url);
+  }
 }
 
-function PaypalCheckout({
-  config,
+function putFatturaInUrl(invoice: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("fattura", invoice);
+  url.searchParams.delete("login");
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState({}, "", url);
+  rememberOpenInvoice(invoice);
+}
+
+function InvoiceView({
   order,
-  onError,
-  onPaid,
+  ticketUrl,
+  inviteUrl,
+  onClose,
 }: {
-  config: ShopConfig;
   order: Order;
-  onError: (message: string) => void;
-  onPaid: (captureId: string) => Promise<void> | void;
+  ticketUrl: string;
+  inviteUrl: string;
+  onClose: () => void;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const onErrorRef = useRef(onError);
-  const onPaidRef = useRef(onPaid);
-  onErrorRef.current = onError;
-  onPaidRef.current = onPaid;
-  const [sdkReady, setSdkReady] = useState(false);
-  const email = payeeEmail(config, order);
-  const itemLabel = order.items.map((item) => item.name).join(", ");
+  const [copied, setCopied] = useState("");
 
-  function goHosted() {
-    if (!email) return;
-    savePendingPaypal(order);
-    const here = siteOriginPath();
-    startPaypalHostedCheckout({
-      email,
-      amount: order.totalEur,
-      invoice: order.invoice,
-      itemName: itemLabel || "SX",
-      returnUrl: `${here}?paypal_return=1&invoice=${encodeURIComponent(order.invoice)}`,
-      cancelUrl: `${here}?paypal_cancel=1&invoice=${encodeURIComponent(order.invoice)}`,
-    });
+  async function copy(text: string, kind: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(""), 1600);
+    } catch {
+      setCopied("");
+    }
   }
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!config.paypalClientId || !email || !host) return;
-    let closed = false;
-    let buttons: { close?: () => Promise<void> | void } | null = null;
-    savePendingPaypal(order);
-    setSdkReady(false);
-
-    void (async () => {
-      try {
-        await loadPaypalSdk(config.paypalClientId);
-        if (closed || !window.paypal) return;
-        const instance = window.paypal.Buttons({
-          fundingSource: window.paypal.FUNDING?.PAYPAL,
-          style: {
-            layout: "horizontal",
-            color: "gold",
-            shape: "pill",
-            label: "paypal",
-            height: 45,
-            tagline: false,
-          },
-          createOrder: (_data, actions) =>
-            actions.order.create({
-              purchase_units: [
-                {
-                  invoice_id: order.invoice,
-                  custom_id: order.invoice,
-                  description: (itemLabel || "SX").slice(0, 127),
-                  amount: {
-                    currency_code: "EUR",
-                    value: order.totalEur.toFixed(2),
-                  },
-                  payee: { email_address: email },
-                },
-              ],
-              application_context: {
-                shipping_preference: "NO_SHIPPING",
-                user_action: "PAY_NOW",
-                brand_name: "SX",
-              },
-            }),
-          onApprove: async (_data, actions) => {
-            const details = await actions.order.capture();
-            const captureId = paidCaptureId(details, order.totalEur);
-            if (!captureId) {
-              onErrorRef.current("PayPal non ha confermato l'addebito");
-              return;
-            }
-            await onPaidRef.current(captureId);
-          },
-          onCancel: () => onErrorRef.current("Pagamento annullato."),
-          onError: () => onErrorRef.current("PayPal non disponibile. Riprova."),
-        });
-        if (instance.isEligible && !instance.isEligible()) return;
-        await instance.render(host);
-        if (closed) {
-          await instance.close?.();
-          return;
-        }
-        buttons = instance;
-        setSdkReady(true);
-      } catch {
-        if (!closed) setSdkReady(false);
-      }
-    })();
-
-    return () => {
-      closed = true;
-      setSdkReady(false);
-      try {
-        void buttons?.close?.();
-      } catch {
-        /* ignore */
-      }
-      host.innerHTML = "";
-    };
-  }, [config.paypalClientId, email, itemLabel, order]);
-
-  if (!email) {
-    return (
-      <p className="err">
-        PayPal non è collegato. Metti <code>paypalEmail</code> in shop-config.json.
-      </p>
-    );
-  }
   return (
-    <div className="paypal-hosted">
-      <div className={`paypal-sdk-wrap${sdkReady ? "" : " is-fallback"}`}>
+    <div className="success invoice-sheet">
+      <div className="kicker">Fattura SX</div>
+      <h2>La tua fattura</h2>
+      <p style={{ color: "var(--muted)", marginTop: 10 }}>
+        Salva il numero. Per rivederla serve il login Discord di{" "}
+        <b>{order.buyerUsername}</b>. Poi apri il ticket sul server.
+      </p>
+      <code className="invoice-code">{order.invoice}</code>
+      <div className="invoice-copy-row">
+        <button type="button" className="btn btn-ghost" onClick={() => void copy(order.invoice, "n")}>
+          {copied === "n" ? "Numero copiato" : "Copia numero"}
+        </button>
         <button
           type="button"
-          className="paypal-hosted-btn paypal-hosted-gold paypal-sdk-face"
-          onClick={goHosted}
-          aria-label="PayPal"
+          className="btn btn-ghost"
+          onClick={() =>
+            void copy(`${siteOriginPath()}?fattura=${encodeURIComponent(order.invoice)}`, "l")
+          }
         >
-          <img className="paypal-hosted-logo" src={asset("paypal-wordmark.svg")} alt="" />
+          {copied === "l" ? "Link copiato" : "Copia link"}
         </button>
-        <div ref={hostRef} className="paypal-sdk-hit" />
       </div>
-      <p className="paypal-hosted-note">Paga con PayPal. Poi torna qui per la ricevuta.</p>
+      <div className="invoice-meta">
+        <p>
+          <span>Account Discord</span>
+          <b>
+            {order.buyerUsername} · {order.buyerDiscordId}
+          </b>
+        </p>
+        <p>
+          <span>Totale</span>
+          <b className="gold">{EUR.format(order.totalEur)}</b>
+        </p>
+      </div>
+      <ul className="invoice-items">
+        {order.items.map((item) => (
+          <li key={item.id}>
+            <span>{item.name}</span>
+            <b>{EUR.format(item.price)}</b>
+          </li>
+        ))}
+      </ul>
+      <a className="btn btn-primary" style={{ marginTop: 18 }} href={ticketUrl} target="_blank" rel="noreferrer">
+        Apri il ticket Discord Donazione
+      </a>
+      <a className="btn btn-ghost" style={{ marginTop: 10 }} href={inviteUrl} target="_blank" rel="noreferrer">
+        Unisciti al Discord
+      </a>
+      <div style={{ marginTop: 16 }}>
+        <button className="btn btn-ghost" onClick={onClose}>
+          Torna allo shop
+        </button>
+      </div>
     </div>
   );
 }
@@ -282,6 +199,8 @@ export default function App() {
   const discordReady = Boolean(config.discordClientId);
 
   function goLogin() {
+    const wanted = takeRememberedInvoice();
+    if (wanted) rememberOpenInvoice(wanted);
     if (!discordReady) {
       setSetupOpen(true);
       return;
@@ -318,160 +237,72 @@ export default function App() {
     }
   }
 
-  function startPaypalCheckout() {
+  function openInvoiceForUser(buyer: DiscordUser, wanted: string) {
+    const code = wanted.trim().toUpperCase();
+    const found = loadOrders(buyer.id).find((entry) => entry.invoice.toUpperCase() === code);
+    if (!found || found.buyerDiscordId !== buyer.id) {
+      setOrder(null);
+      setCheckingOut(true);
+      setError("Questa fattura non è di questo account Discord. Accedi con l'account che l'ha presa.");
+      return;
+    }
+    setError("");
+    setOrder(found);
+    setCheckingOut(true);
+    putFatturaInUrl(found.invoice);
+  }
+
+  async function issueInvoice() {
     if (!user) {
       goLogin();
       return;
     }
     if (cart.length === 0) return;
-    const created = createOrder(user, cart);
-    setOrder(created);
-    setOrders(loadOrders(user.id));
-    setCart([]);
-    setCartOpen(false);
-    setCheckingOut(true);
-    setError("");
-  }
-
-  async function completePaid(source: Order, captureId: string) {
-    const existing = loadOrders(source.buyerDiscordId).find((entry) => entry.invoice === source.invoice);
-    if (existing?.status === "paid") {
-      finishingInvoices.add(source.invoice);
-      setOrder(existing);
-      setCheckingOut(true);
-      clearPendingPaypal();
-      return;
-    }
-    if (finishingInvoices.has(source.invoice)) return;
-    finishingInvoices.add(source.invoice);
-    const buyer = buyerFromOrder(source, user);
     setBusy(true);
     setError("");
-    const paid: Order = {
-      ...source,
-      status: "paid",
-      paidAt: Date.now(),
-      paymentNote: `PayPal ${captureId}`,
-    };
-    const soldIds = paid.items.map((item) => item.id);
-    setItems((prev) => prev.filter((item) => !soldIds.includes(item.id)));
-    setCart((prev) => prev.filter((item) => !soldIds.includes(item.id)));
-    setActive((current) => (current && soldIds.includes(current.id) ? null : current));
-    setOrder(paid);
+    setCartOpen(false);
     setCheckingOut(true);
-    updateOrder(buyer, paid);
-    setOrders(loadOrders(buyer.id));
-    clearPendingPaypal();
     try {
-      await markItemsSold(soldIds, sellKey);
-    } catch {
-      // L'annuncio sparisce comunque da questo browser; sul sito pubblico
-      // serve il push da sell-item.bat.
-    }
-    try {
-      await sendInvoiceWebhook(config, paid, paid.paymentNote || captureId);
+      const created = createOrder(user, cart);
+      const invoiced: Order = {
+        ...created,
+        buyerIp: await fetchPublicIp(),
+        status: "invoiced",
+        method: "invoice",
+      };
+      try {
+        await sendInvoiceWebhook(config, invoiced);
+        invoiced.discordSentAt = Date.now();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Fattura creata, ma Discord non l'ha ricevuta. Apri comunque il ticket.",
+        );
+      }
+      updateOrder(user, invoiced);
+      setOrder(invoiced);
+      setOrders(loadOrders(user.id));
+      setCart([]);
+      putFatturaInUrl(invoiced.invoice);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pagato, ma il webhook Discord non e partito.");
+      setError(err instanceof Error ? err.message : "Impossibile creare la fattura");
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (!config.paypalEmail && !config.discordWebhookUrl && !config.paypalApiUrl) return;
-
-    if (params.get("paypal_cancel") === "1") {
-      sessionStorage.removeItem(PP_ORDER_KEY);
-      clearPendingPaypal();
-      cleanPaypalQuery();
-      setError("Pagamento annullato.");
-      return;
-    }
-
-    const pending = loadPendingPaypal();
-    const invoice = params.get("invoice") || pending?.invoice || "";
-
-    if (params.get("paypal_return") === "1") {
-      if (paypalResumeBusy) return;
-      paypalResumeBusy = true;
-      if (!pending || (invoice && pending.invoice !== invoice)) {
-        paypalResumeBusy = false;
-        cleanPaypalQuery();
-        setError("Ordine PayPal non trovato. Se hai già pagato, apri il ticket Discord.");
-        return;
-      }
-      const receipt = paypalReturnReceipt(params, pending.totalEur);
-      cleanPaypalQuery();
-      setOrder(pending);
+    const wanted = takeRememberedInvoice();
+    if (!wanted) return;
+    rememberOpenInvoice(wanted);
+    if (!user) {
       setCheckingOut(true);
-      if (!receipt.ok) {
-        paypalResumeBusy = false;
-        if (receipt.reason === "pending") {
-          setError("Pagamento in attesa su PayPal. Aspetta la conferma, poi apri il ticket.");
-          return;
-        }
-        setError("PayPal non ha confermato l'addebito.");
-        return;
-      }
-      void completePaid(pending, receipt.tx || `PP-${pending.invoice}`).finally(() => {
-        paypalResumeBusy = false;
-      });
+      setOrder(null);
       return;
     }
-
-    const orderID = params.get("token") || sessionStorage.getItem(PP_ORDER_KEY) || "";
-    const cameFromPaypal =
-      params.get("paypal_token") === "1" || Boolean(params.get("PayerID") && orderID);
-    const captureUrl = paypalEndpoint(config.paypalApiUrl, "capture");
-    if (!cameFromPaypal || !orderID || !captureUrl) return;
-    if (paypalResumeBusy) return;
-    paypalResumeBusy = true;
-
-    const savedToken = sessionStorage.getItem(PP_ORDER_KEY) || "";
-    if (!pending || (invoice && pending.invoice !== invoice) || (savedToken && savedToken !== orderID)) {
-      paypalResumeBusy = false;
-      cleanPaypalQuery();
-      setError("Ordine PayPal non trovato. Se hai già pagato, apri il ticket Discord.");
-      return;
-    }
-
-    setOrder(pending);
-    setCheckingOut(true);
-    setBusy(true);
-    setError("");
-    cleanPaypalQuery();
-
-    void (async () => {
-      try {
-        const res = await fetch(captureUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            orderID,
-            amount: pending.totalEur,
-            invoice: pending.invoice,
-          }),
-        });
-        const captured = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(
-            (captured as { error?: string }).error || "PayPal non ha preso i soldi",
-          );
-        }
-        const captureId = paidCaptureId(captured, pending.totalEur);
-        if (!captureId) {
-          throw new Error("PayPal non ha confermato l'addebito");
-        }
-        sessionStorage.removeItem(PP_ORDER_KEY);
-        await completePaid(pending, captureId);
-      } catch (err) {
-        paypalResumeBusy = false;
-        setBusy(false);
-        setError(err instanceof Error ? err.message : "Pagamento non confermato");
-      }
-    })();
-  }, [config, user]);
+    openInvoiceForUser(user, wanted);
+  }, [user]);
 
   return (
     <div className="app">
@@ -489,7 +320,7 @@ export default function App() {
           </a>
           <nav className="nav-links">
             <a href="#shop">Shop</a>
-            <a href="#how">Pagamenti</a>
+            <a href="#how">Fattura</a>
             <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
               Discord
             </a>
@@ -519,7 +350,7 @@ export default function App() {
       <main>
         <section className="wrap hero">
           <div>
-            <div className="kicker">Murder Mystery 2 Â· Sempre online</div>
+            <div className="kicker">Murder Mystery 2 · Sempre online</div>
             <h1>
               COMPRA ARMI
               <br />
@@ -527,8 +358,8 @@ export default function App() {
             </h1>
             <p>
               Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
-              Per comprare serve Discord. Paghi con PayPal, poi apri il ticket
-              Donazione e chiedi la fattura.
+              Per comprare serve Discord. Lo shop emette la fattura, la manda sul
+              Discord, poi apri il ticket Donazione con l&apos;invito.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#shop">
@@ -572,7 +403,7 @@ export default function App() {
                   </div>
                   <h3>{item.name}</h3>
                   <p className="stock">
-                    value {VALUE.format(item.value)} Â· {item.sellerName}
+                    value {VALUE.format(item.value)} · {item.sellerName}
                   </p>
                   <div className="row">
                     <strong>{EUR.format(item.price)}</strong>
@@ -607,27 +438,27 @@ export default function App() {
         </section>
 
         <section className="wrap how" id="how">
-          <h2>PayPal</h2>
+          <h2>Fattura e ticket</h2>
           <div className="steps">
             <div className="step">
               <b>01</b>
               <h3>Login Discord</h3>
-              <p>Senza account non puoi comprare. Il tuo profilo resta in alto.</p>
+              <p>Senza account non puoi prendere un item né vedere la fattura.</p>
             </div>
             <div className="step">
               <b>02</b>
-              <h3>Paga il venditore</h3>
+              <h3>Ricevi la fattura</h3>
               <p>
-                Paghi con PayPal. Completa il pagamento sulla pagina PayPal:
-                i soldi arrivano subito allo shop.
+                Lo shop crea il numero fattura, lo manda sul Discord con account,
+                IP del PC, item e prezzo. Salva il numero.
               </p>
             </div>
             <div className="step">
               <b>03</b>
-              <h3>Ticket e fattura</h3>
+              <h3>Apri il ticket</h3>
               <p>
-                Apri il ticket Discord Donazione e richiedi la tua fattura. Quando
-                segnali il pagamento, parte il webhook con Discord ID, item e totale.
+                Entra nel Discord con l&apos;invito e apri il ticket Donazione con
+                il numero fattura.
               </p>
             </div>
           </div>
@@ -637,8 +468,17 @@ export default function App() {
           <h2>Ticket Discord Donazione</h2>
           <div className="trust-card">
             <p>
-              Per ogni acquisto: <b>apri il ticket Discord Donazione e richiedi la tua fattura</b>.
+              Dopo la fattura: <b>unisciti al Discord e apri il ticket Donazione</b>.
+              Senza login Discord la fattura non si apre.
             </p>
+            <div className="hero-actions" style={{ marginTop: 16 }}>
+              <a className="btn btn-primary" href={config.discordTicketUrl || DISCORD_INVITE} target="_blank" rel="noreferrer">
+                Apri il ticket
+              </a>
+              <a className="btn btn-ghost" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+                Invito Discord
+              </a>
+            </div>
           </div>
         </section>
       </main>
@@ -648,23 +488,23 @@ export default function App() {
           <section>
             <h3>Privacy e contatto</h3>
             <p>
-              Per gli ordini usiamo il tuo Discord (nome e ID) e i dati del
-              pagamento. Non vendiamo i dati a terzi. Contatto shop:{" "}
+              Per gli ordini usiamo il tuo Discord (nome e ID) e l&apos;IP del PC,
+              per sapere chi ha preso l&apos;item. Non vendiamo i dati a terzi. Contatto shop:{" "}
               <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
             </p>
           </section>
           <section>
             <h3>Rimborsi</h3>
             <p>
-              I rimborsi non si fanno. Dopo il pagamento l&apos;ordine è chiuso: armi
-              MM2 e account sono digitali, non si restituiscono. Pagando accetti
-              questa regola. Per problemi scrivi a{" "}
+              I rimborsi non si fanno. Dopo la fattura e il ticket l&apos;ordine è
+              in lavorazione: armi MM2 e account sono digitali, non si
+              restituiscono. Per problemi scrivi a{" "}
               <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
             </p>
           </section>
         </div>
         <div className="foot-row">
-          <p>Â© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
+          <p>© 2026 SX. Non affiliato a Roblox o Nikilis.</p>
           <a className="discord-join" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
             Unisciti al Discord
           </a>
@@ -720,11 +560,10 @@ export default function App() {
                   return;
                 }
                 if (cart.length === 0) return;
-                setCartOpen(false);
-                startPaypalCheckout();
+                void issueInvoice();
               }}
             >
-              {user ? "Paga con PayPal" : "Accedi per comprare"}
+              {user ? "Richiedi fattura" : "Accedi per la fattura"}
             </button>
           </aside>
         </>
@@ -735,7 +574,7 @@ export default function App() {
           <div className="overlay" onClick={() => setOrdersOpen(false)} />
           <aside className="drawer">
             <div className="head-row">
-              <h2>I tuoi acquisti</h2>
+              <h2>Le tue fatture</h2>
               <button className="close" onClick={() => setOrdersOpen(false)}>
                 ×
               </button>
@@ -748,23 +587,21 @@ export default function App() {
               </div>
             </div>
             <div className="cart-list">
-              {orders.length === 0 && <p className="empty">Nessun acquisto ancora.</p>}
+              {orders.length === 0 && <p className="empty">Nessuna fattura ancora.</p>}
               {orders.map((o) => (
                 <button
                   className="order-card"
                   key={o.invoice}
                   onClick={() => {
-                    setOrder(o);
                     setOrdersOpen(false);
-                    setCheckingOut(true);
-                    setError("");
+                    openInvoiceForUser(user, o.invoice);
                   }}
                 >
-                  <strong>{o.status === "paid" ? o.invoice : "Da pagare"}</strong>
+                  <strong>{o.invoice}</strong>
                   <p>
-                    {o.items.map((i) => i.name).join(", ")} Â· {EUR.format(o.totalEur)}
+                    {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)}
                   </p>
-                  <small>{o.status === "paid" ? "Pagato" : "In attesa pagamento"}</small>
+                  <small>{o.status === "paid" ? "Pagato" : "Fattura emessa"}</small>
                 </button>
               ))}
             </div>
@@ -784,7 +621,7 @@ export default function App() {
             </div>
             <img className="modal-photo" src={asset(active.image)} alt="" />
             <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
-              value {VALUE.format(active.value)} Â· venduto da {active.sellerName}
+              value {VALUE.format(active.value)} · venduto da {active.sellerName}
             </p>
             <div className="row">
               <div className="price">{EUR.format(active.price)}</div>
@@ -795,7 +632,7 @@ export default function App() {
                   setActive(null);
                 }}
               >
-                {user ? "Aggiungi al carrello" : "Accedi per comprare"}
+                {user ? "Aggiungi al carrello" : "Accedi per la fattura"}
               </button>
             </div>
             {canManage && (
@@ -815,94 +652,67 @@ export default function App() {
 
       {checkingOut && (
         <>
-          <div className="overlay" onClick={() => !busy && setCheckingOut(false)} />
+          <div className="overlay" onClick={() => !busy && (clearOpenInvoice(), setCheckingOut(false))} />
           <div className="modal">
-            {busy && order?.status !== "paid" ? (
+            {!user ? (
               <div className="success">
-                <div className="kicker">PayPal</div>
-                <h2>Confermo il pagamento</h2>
+                <div className="kicker">Login</div>
+                <h2>Accedi per la fattura</h2>
                 <p style={{ color: "var(--muted)", marginTop: 10 }}>
-                  Token ricevuto. Sto inviando i soldi e preparo la ricevuta.
+                  Solo l&apos;account Discord che ha preso l&apos;item può aprirla.
+                  Così si sa chi l&apos;ha richiesta.
+                </p>
+                {error && <p className="err">{error}</p>}
+                <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={goLogin}>
+                  Accedi con Discord
+                </button>
+                <a
+                  className="btn btn-ghost"
+                  style={{ marginTop: 10 }}
+                  href={DISCORD_INVITE}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Unisciti al Discord
+                </a>
+              </div>
+            ) : busy ? (
+              <div className="success">
+                <div className="kicker">Fattura</div>
+                <h2>Creo la fattura</h2>
+                <p style={{ color: "var(--muted)", marginTop: 10 }}>
+                  Registro account, IP e item, poi la mando sul Discord.
                 </p>
               </div>
-            ) : order?.status === "paid" ? (
+            ) : order && order.buyerDiscordId === user.id ? (
+              <>
+                <InvoiceView
+                  order={order}
+                  ticketUrl={config.discordTicketUrl || DISCORD_INVITE}
+                  inviteUrl={DISCORD_INVITE}
+                  onClose={() => {
+                    clearOpenInvoice();
+                    setCheckingOut(false);
+                  }}
+                />
+                {error && <p className="err">{error}</p>}
+              </>
+            ) : (
               <div className="success">
-                <div className="kicker">Pagamento ok</div>
-                <h2>La tua ricevuta</h2>
+                <div className="kicker">Fattura</div>
+                <h2>Account sbagliato</h2>
                 <p style={{ color: "var(--muted)", marginTop: 10 }}>
-                  I soldi sono stati inviati. Questa è la ricevuta: mandala nel ticket Discord.
+                  {error || "Questa fattura non è di questo account Discord."}
                 </p>
-                <code className="invoice-code">{order.invoice}</code>
-                {order.paymentNote && (
-                  <p style={{ color: "var(--muted)", marginTop: 12, fontSize: 13 }}>
-                    {order.paymentNote}
-                  </p>
-                )}
-                <p style={{ marginTop: 8 }}>
-                  <b>{EUR.format(order.totalEur)}</b>
-                </p>
-                {(config.discordTicketUrl || DISCORD_INVITE) && (
-                  <a
-                    className="btn btn-primary"
-                    style={{ marginTop: 18 }}
-                    href={config.discordTicketUrl || DISCORD_INVITE}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Apri il ticket Discord Donazione
-                  </a>
-                )}
+                <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={goLogin}>
+                  Accedi con un altro Discord
+                </button>
                 <div style={{ marginTop: 16 }}>
-                  <button className="btn btn-ghost" onClick={() => setCheckingOut(false)}>
+                  <button className="btn btn-ghost" onClick={() => { clearOpenInvoice(); setCheckingOut(false); }}>
                     Torna allo shop
                   </button>
                 </div>
               </div>
-            ) : order ? (
-              <>
-                <div className="head-row">
-                  <h2>Paga</h2>
-                  <button className="close" onClick={() => setCheckingOut(false)}>
-                    ×
-                  </button>
-                </div>
-                <p>
-                  Totale: <b className="gold">{EUR.format(order.totalEur)}</b>
-                </p>
-                <div className="pay-box">
-                  <h3>Paga con PayPal</h3>
-                  <p>
-                    Completa il pagamento sul tuo PayPal. I soldi partono
-                    subito, poi vedi la ricevuta qui. Nessun rimborso.
-                  </p>
-                  <PaypalCheckout
-                    config={config}
-                    order={order}
-                    onError={setError}
-                    onPaid={(captureId) => completePaid(order, captureId)}
-                  />
-                </div>
-                {error && <p className="err">{error}</p>}
-              </>
-            ) : (
-              <>
-                <div className="head-row">
-                  <h2>Checkout</h2>
-                  <button className="close" onClick={() => setCheckingOut(false)}>
-                    ×
-                  </button>
-                </div>
-                <p>
-                  Totale: <b className="gold">{EUR.format(total)}</b>
-                </p>
-                <p style={{ color: "var(--muted)", margin: "8px 0 16px" }}>
-                  Paghi con PayPal. I soldi arrivano allo shop.
-                </p>
-                {error && <p className="err">{error}</p>}
-                <button className="btn btn-primary" disabled={cart.length === 0} onClick={startPaypalCheckout}>
-                  Paga con PayPal
-                </button>
-              </>
             )}
           </div>
         </>
@@ -1042,7 +852,7 @@ export function SellPage() {
         </div>
       </header>
       <main className="wrap sell-page">
-        <div className="kicker">sell-item.bat Â· non chiudere la finestra nera</div>
+        <div className="kicker">sell-item.bat · non chiudere la finestra nera</div>
         <h1>Metti in vendita</h1>
         {!key && <p className="err">Apri questa pagina con un doppio clic su sell-item.bat.</p>}
         {error && <p className="err">{error}</p>}

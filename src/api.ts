@@ -40,6 +40,21 @@ export function loadSoldIds(): string[] {
   }
 }
 
+export async function fetchPublicIp() {
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch("https://api.ipify.org?format=json", { signal: ctrl.signal });
+    const data = (await res.json().catch(() => ({}))) as { ip?: string };
+    const ip = String(data.ip || "").trim();
+    return ip || "sconosciuto";
+  } catch {
+    return "sconosciuto";
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export async function fetchConfig(): Promise<ShopConfig> {
   const empty: ShopConfig = {
     discordClientId: "",
@@ -193,9 +208,9 @@ export function createOrder(user: DiscordUser, items: ShopItem[]): Order {
     invoice,
     buyerDiscordId: user.id,
     buyerUsername: user.username,
-    method: "paypal",
+    method: "invoice",
     hasPlus: false,
-    status: "awaiting_payment",
+    status: "invoiced",
     totalEur: items.reduce((n, item) => n + item.price, 0),
     totalRobux: 0,
     items: items.map((item) => ({
@@ -218,29 +233,32 @@ export function updateOrder(user: DiscordUser, order: Order) {
   saveOrders(user.id, orders);
 }
 
-export async function sendInvoiceWebhook(config: ShopConfig, order: Order, paymentNote: string) {
+export async function sendInvoiceWebhook(config: ShopConfig, order: Order) {
   if (!config.discordWebhookUrl) throw new Error("Webhook Discord non configurato");
+  const invite = config.discordTicketUrl || "https://discord.gg/zq3fR5MxgU";
   const items = order.items
     .map((item) => `• ${item.name} — ${EUR.format(item.price)}`)
     .join("\n");
+  const account = [
+    order.buyerUsername,
+    `<@${order.buyerDiscordId}>`,
+    `ID \`${order.buyerDiscordId}\``,
+  ].join("\n");
   const payload = {
     username: "SX Fatture",
+    content: `Fattura **${order.invoice}** · ${order.buyerUsername} (<@${order.buyerDiscordId}>)`,
+    allowed_mentions: { users: [String(order.buyerDiscordId)] },
     embeds: [
       {
         title: `Fattura ${order.invoice}`,
         color: 0x7b4dff,
         fields: [
-          { name: "Discord ID", value: String(order.buyerDiscordId), inline: true },
-          { name: "Account", value: order.buyerUsername, inline: true },
-          { name: "Metodo", value: "PayPal", inline: true },
-          { name: "Speso", value: EUR.format(order.totalEur), inline: true },
-          { name: "Cosa ha preso", value: items || "—", inline: false },
-          {
-            name: "Togli dal sito",
-            value: order.items.map((item) => item.id).join(", ") || "—",
-            inline: false,
-          },
-          { name: "Dettagli pagamento", value: paymentNote || "Segnalato dal cliente", inline: false },
+          { name: "Account Discord", value: account.slice(0, 1024), inline: false },
+          { name: "IP del PC", value: (order.buyerIp || "sconosciuto").slice(0, 256), inline: true },
+          { name: "Numero fattura", value: `\`${order.invoice}\``, inline: true },
+          { name: "Item e prezzo", value: (items || "—").slice(0, 1024), inline: false },
+          { name: "Totale", value: EUR.format(order.totalEur), inline: true },
+          { name: "Ticket / invito", value: invite.slice(0, 1024), inline: false },
         ],
         timestamp: new Date().toISOString(),
       },

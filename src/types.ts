@@ -34,13 +34,15 @@ export type Order = {
   invoice: string;
   buyerDiscordId: string;
   buyerUsername: string;
-  method: "paypal" | "robux";
+  method: "paypal" | "robux" | "invoice";
   hasPlus: boolean;
-  status: "awaiting_payment" | "paid";
+  status: "awaiting_payment" | "paid" | "invoiced";
   totalEur: number;
   totalRobux: number;
   items: OrderItem[];
   createdAt: number;
   paidAt?: number;
   paymentNote?: string;
+  buyerIp?: string;
+  discordSentAt?: number;
 };

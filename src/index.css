@@ -982,12 +982,62 @@ a {
   line-height: 1.45;
 }
 
-.invoice-code {
-  display: block;
-  margin-top: 16px;
-  font-size: 28px;
-  letter-spacing: 0.12em;
-  text-align: center;
+.invoice-copy-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.invoice-copy-row .btn {
+  width: 100%;
+}
+
+.invoice-sheet .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.invoice-meta {
+  margin-top: 18px;
+  text-align: left;
+  display: grid;
+  gap: 10px;
+}
+
+.invoice-meta p {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.invoice-meta span {
+  color: var(--muted);
+}
+
+.invoice-items {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.invoice-items li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.invoice-items li:first-child {
+  border-top: 0;
 }
 
 .pay-box {
