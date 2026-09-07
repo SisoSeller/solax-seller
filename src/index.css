@@ -965,10 +965,18 @@ a {
   line-height: 1.45;
 }
 
-.pay-choice {
-  display: grid;
-  gap: 8px;
-  margin-top: 4px;
+.pay-types {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pay-types span {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .pay-panel {

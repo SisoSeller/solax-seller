@@ -387,10 +387,9 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order) {
           { name: "Account Discord", value: account.slice(0, 1024), inline: false },
           { name: "IP del PC", value: (order.buyerIp || "sconosciuto").slice(0, 256), inline: true },
           { name: "Numero fattura", value: `\`${order.invoice}\``, inline: true },
-          { name: "Metodo", value: methodLabel(order.method), inline: true },
           { name: "Item e prezzo", value: (items || "—").slice(0, 1024), inline: false },
-          { name: "Totale euro", value: EUR.format(order.totalEur), inline: true },
-          { name: "Totale Robux", value: `${robux} R$`, inline: true },
+          { name: "Pagamento", value: `${EUR.format(order.totalEur)} · ${robux} R$`, inline: true },
+          { name: "Tipi di pagamento", value: "Roblox · PayPal · Card (si decide nel ticket)", inline: false },
           ...(order.paymentNote
             ? [{ name: "Pagamento", value: order.paymentNote.slice(0, 1024), inline: false }]
             : []),

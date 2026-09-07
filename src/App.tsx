@@ -21,7 +21,6 @@ import {
   loadUser,
   loginWithDiscord,
   logout,
-  methodLabel,
   orderRobux,
   rememberPendingAdd,
   removeItem,
@@ -34,8 +33,6 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset, siteOriginPath } from "./paths";
-import { PayPanel, type PayChoice } from "./PayPanel";
-import { paypalReturnReceipt } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 const OPEN_INVOICE_KEY = "sx-open-invoice";
@@ -80,24 +77,28 @@ function putFatturaInUrl(order: Order) {
   saveInvoiceShare(order);
 }
 
+function PaymentTypes() {
+  return (
+    <p className="pay-types">
+      Tipi di pagamento: <span>Roblox</span>
+      {" · "}
+      <span>PayPal</span>
+      {" · "}
+      <span>Card</span>
+    </p>
+  );
+}
+
 function InvoiceView({
   order,
-  config,
   ticketUrl,
   inviteUrl,
   onClose,
-  onError,
-  onPaid,
-  onChoose,
 }: {
   order: Order;
-  config: ShopConfig;
   ticketUrl: string;
   inviteUrl: string;
   onClose: () => void;
-  onError: (message: string) => void;
-  onPaid: (captureId: string, method: "paypal" | "card") => void;
-  onChoose: (method: PayChoice) => void;
 }) {
   const [copied, setCopied] = useState("");
 
@@ -145,7 +146,7 @@ function InvoiceView({
           </b>
         </p>
         <p>
-          <span>Totale</span>
+          <span>Pagamento</span>
           <b className="gold">
             {EUR.format(order.totalEur)} · {orderRobux(order)} R$
           </b>
@@ -161,21 +162,7 @@ function InvoiceView({
           </li>
         ))}
       </ul>
-      {order.status === "paid" ? (
-        <p className="ok" style={{ marginTop: 16 }}>
-          Pagato con {methodLabel(order.method)}
-          {order.paymentNote ? ` · ${order.paymentNote}` : ""}.
-        </p>
-      ) : (
-        <PayPanel
-          config={config}
-          order={order}
-          ticketUrl={ticketUrl}
-          onError={onError}
-          onPaid={onPaid}
-          onChoose={onChoose}
-        />
-      )}
+      <PaymentTypes />
       <a className="btn btn-primary" style={{ marginTop: 18 }} href={ticketUrl} target="_blank" rel="noreferrer">
         Apri il ticket Discord Donazione
       </a>
@@ -338,7 +325,7 @@ export default function App() {
     putFatturaInUrl(found);
   }
 
-  async function issueInvoice(method: PayChoice = "paypal") {
+  async function issueInvoice() {
     if (!user) {
       goLogin();
       return;
@@ -349,12 +336,12 @@ export default function App() {
     setCartOpen(false);
     setCheckingOut(true);
     try {
-      const created = createOrder(user, cart, method);
+      const created = createOrder(user, cart, "invoice");
       const invoiced: Order = {
         ...created,
         buyerIp: await fetchPublicIp(),
         status: "invoiced",
-        method,
+        method: "invoice",
       };
       try {
         await sendInvoiceWebhook(config, invoiced);
@@ -378,41 +365,6 @@ export default function App() {
     }
   }
 
-  function choosePayMethod(method: PayChoice) {
-    if (!user || !order || order.buyerDiscordId !== user.id || order.status === "paid") return;
-    const next: Order = { ...order, method };
-    updateOrder(user, next);
-    setOrder(next);
-    putFatturaInUrl(next);
-  }
-
-  async function completePaid(source: Order, captureId: string, method: "paypal" | "card") {
-    if (!user || user.id !== source.buyerDiscordId) return;
-    const existing = loadOrders(source.buyerDiscordId).find((entry) => entry.invoice === source.invoice);
-    if (existing?.status === "paid") {
-      setOrder(existing);
-      setCheckingOut(true);
-      return;
-    }
-    const paid: Order = {
-      ...source,
-      status: "paid",
-      paidAt: Date.now(),
-      method,
-      paymentNote: `${method === "card" ? "Carta" : "PayPal"} ${captureId}`,
-    };
-    updateOrder(user, paid);
-    setOrder(paid);
-    setCheckingOut(true);
-    setOrders(loadOrders(user.id));
-    putFatturaInUrl(paid);
-    try {
-      await sendInvoiceWebhook(config, paid);
-    } catch {
-      /* la fattura è già su Discord */
-    }
-  }
-
   useEffect(() => {
     const wanted = takeRememberedInvoice();
     if (!wanted) return;
@@ -423,30 +375,6 @@ export default function App() {
       return;
     }
     openInvoiceForUser(user, wanted);
-  }, [user]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("paypal_cancel") === "1") {
-      params.delete("paypal_cancel");
-      window.history.replaceState({}, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}`);
-      setError("Pagamento annullato.");
-      return;
-    }
-    if (params.get("paypal_return") !== "1" || !user) return;
-    const pending = loadInvoiceShare() || loadOrders(user.id)[0] || null;
-    const invoice = params.get("invoice") || pending?.invoice || "";
-    if (!pending || (invoice && pending.invoice !== invoice) || pending.buyerDiscordId !== user.id) {
-      return;
-    }
-    const receipt = paypalReturnReceipt(params, pending.totalEur);
-    if (!receipt.ok) {
-      setError("PayPal non ha confermato l'addebito.");
-      setOrder(pending);
-      setCheckingOut(true);
-      return;
-    }
-    void completePaid(pending, receipt.tx || `PP-${pending.invoice}`, pending.method === "card" ? "card" : "paypal");
   }, [user]);
 
   return (
@@ -465,7 +393,6 @@ export default function App() {
           </a>
           <nav className="nav-links">
             <a href="#shop">Shop</a>
-            <a href="#pay">Paga</a>
             <a href="#how">Fattura</a>
             <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
               Discord
@@ -504,8 +431,8 @@ export default function App() {
             </h1>
             <p>
               Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
-              Per comprare serve Discord. Fattura, poi paghi sul sito con{" "}
-              <b>PayPal</b>, <b>carta</b> o <b>Robux</b> e apri il ticket Donazione.
+              Per comprare serve Discord. Lo shop fa la fattura, poi nel ticket
+              Discord si decide il pagamento: Roblox, PayPal o Card.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#shop">
@@ -587,23 +514,12 @@ export default function App() {
         </section>
 
         <section className="wrap how" id="pay">
-          <h2>Paga sul sito</h2>
-          <div className="steps">
-            <div className="step">
-              <b>PayPal</b>
-              <h3>Account PayPal</h3>
-              <p>Paga dalla home dopo la fattura, col bottone PayPal ufficiale.</p>
-            </div>
-            <div className="step">
-              <b>Carta</b>
-              <h3>Debito o credito</h3>
-              <p>Stesso checkout, con carta. I soldi arrivano allo shop via PayPal.</p>
-            </div>
-            <div className="step">
-              <b>Robux</b>
-              <h3>Paga in R$</h3>
-              <p>Vedi il totale Robux sulla fattura e pagali nel ticket Discord.</p>
-            </div>
+          <h2>Tipi di pagamento</h2>
+          <div className="trust-card">
+            <PaymentTypes />
+            <p style={{ marginTop: 12 }}>
+              Non si paga sul sito. Dopo la fattura apri il ticket e lì scegli Roblox, PayPal o Card.
+            </p>
           </div>
         </section>
 
@@ -720,26 +636,19 @@ export default function App() {
               ))}
             </div>
             <div className="total">
-              <span>Totale</span>
+              <span>Pagamento</span>
               <b>
                 {EUR.format(total)} · {cart.reduce((n, item) => n + itemRobux(item), 0)} R$
               </b>
             </div>
+            <PaymentTypes />
             {user ? (
-              <div className="pay-choice">
-                <button className="btn btn-primary" disabled={cart.length === 0} onClick={() => void issueInvoice("paypal")}>
-                  Paga con PayPal
-                </button>
-                <button className="btn btn-ghost" disabled={cart.length === 0} onClick={() => void issueInvoice("card")}>
-                  Paga con carta
-                </button>
-                <button className="btn btn-ghost" disabled={cart.length === 0} onClick={() => void issueInvoice("robux")}>
-                  Paga in Robux
-                </button>
-              </div>
+              <button className="btn btn-primary" disabled={cart.length === 0} onClick={() => void issueInvoice()}>
+                Richiedi fattura
+              </button>
             ) : (
               <button className="btn btn-primary" onClick={goLogin}>
-                Accedi per pagare
+                Accedi per la fattura
               </button>
             )}
           </aside>
@@ -868,16 +777,12 @@ export default function App() {
               <>
                 <InvoiceView
                   order={order}
-                  config={config}
                   ticketUrl={config.discordTicketUrl || DISCORD_INVITE}
                   inviteUrl={DISCORD_INVITE}
                   onClose={() => {
                     clearOpenInvoice();
                     setCheckingOut(false);
                   }}
-                  onError={setError}
-                  onPaid={(captureId, method) => void completePaid(order, captureId, method)}
-                  onChoose={choosePayMethod}
                 />
                 {error && <p className="err">{error}</p>}
               </>
