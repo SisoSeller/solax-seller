@@ -202,6 +202,102 @@ export function logout() {
   saveUser(null);
 }
 
+const CART_KEY = "sx-cart-ids";
+const PENDING_ADD_KEY = "sx-pending-add";
+const INVOICE_SHARE_KEY = "sx-invoice-share";
+
+export function saveCartIds(ids: string[]) {
+  localStorage.setItem(CART_KEY, JSON.stringify(ids.filter(Boolean)));
+}
+
+export function loadCartIds(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CART_KEY) || "[]") as unknown;
+    return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberPendingAdd(id: string) {
+  if (id) sessionStorage.setItem(PENDING_ADD_KEY, id);
+}
+
+export function takePendingAdd() {
+  const id = sessionStorage.getItem(PENDING_ADD_KEY) || "";
+  sessionStorage.removeItem(PENDING_ADD_KEY);
+  return id;
+}
+
+export function saveInvoiceShare(order: Order) {
+  sessionStorage.setItem(INVOICE_SHARE_KEY, JSON.stringify(order));
+}
+
+export function loadInvoiceShare(): Order | null {
+  try {
+    const raw = sessionStorage.getItem(INVOICE_SHARE_KEY);
+    return raw ? (JSON.parse(raw) as Order) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearInvoiceShare() {
+  sessionStorage.removeItem(INVOICE_SHARE_KEY);
+}
+
+export function encodeInvoiceShare(order: Order) {
+  const slim = {
+    invoice: order.invoice,
+    buyerDiscordId: order.buyerDiscordId,
+    buyerUsername: order.buyerUsername,
+    totalEur: order.totalEur,
+    createdAt: order.createdAt,
+    status: order.status,
+    method: order.method,
+    items: order.items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      price: item.price,
+      robuxPrice: item.robuxPrice,
+      paypal: item.paypal,
+      roblox: item.roblox,
+      image: item.image,
+    })),
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(slim));
+  let bin = "";
+  bytes.forEach((b) => {
+    bin += String.fromCharCode(b);
+  });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function decodeInvoiceShare(raw: string): Order | null {
+  try {
+    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const bin = atob(pad);
+    const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<Order>;
+    if (!parsed.invoice || !parsed.buyerDiscordId || !Array.isArray(parsed.items)) return null;
+    return {
+      invoice: String(parsed.invoice),
+      buyerDiscordId: String(parsed.buyerDiscordId),
+      buyerUsername: String(parsed.buyerUsername || ""),
+      method: parsed.method === "robux" ? "robux" : parsed.method === "paypal" ? "paypal" : "invoice",
+      hasPlus: false,
+      status: parsed.status === "paid" ? "paid" : "invoiced",
+      totalEur: Number(parsed.totalEur) || 0,
+      totalRobux: 0,
+      items: parsed.items,
+      createdAt: Number(parsed.createdAt) || Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function createOrder(user: DiscordUser, items: ShopItem[]): Order {
   const invoice = `SLX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
   const order: Order = {
@@ -229,7 +325,10 @@ export function createOrder(user: DiscordUser, items: ShopItem[]): Order {
 }
 
 export function updateOrder(user: DiscordUser, order: Order) {
-  const orders = loadOrders(user.id).map((o) => (o.invoice === order.invoice ? order : o));
+  const orders = loadOrders(user.id);
+  const idx = orders.findIndex((o) => o.invoice === order.invoice);
+  if (idx >= 0) orders[idx] = order;
+  else orders.unshift(order);
   saveOrders(user.id, orders);
 }
 
@@ -264,9 +363,20 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order) {
       },
     ],
   };
+  const body = JSON.stringify(payload);
+  try {
+    const res = await fetch(config.discordWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (res.ok || res.type === "opaque") return;
+  } catch {
+    /* GitHub Pages a volte blocca il JSON: riprovo come form */
+  }
   const res = await fetch(config.discordWebhookUrl, {
     method: "POST",
-    body: new URLSearchParams({ payload_json: JSON.stringify(payload) }),
+    body: new URLSearchParams({ payload_json: body }),
   });
   if (!res.ok && res.type !== "opaque") {
     throw new Error("Webhook Discord non inviato");

@@ -1,23 +1,32 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   CONTACT_EMAIL,
   EUR,
   VALUE,
   type ShopConfig,
+  clearInvoiceShare,
   completeDiscordLogin,
   createOrder,
+  decodeInvoiceShare,
+  encodeInvoiceShare,
   fetchConfig,
   fetchItems,
   fetchPublicIp,
   listItem,
+  loadCartIds,
+  loadInvoiceShare,
   loadOrders,
   loadSellKey,
   loadUser,
   loginWithDiscord,
   logout,
+  rememberPendingAdd,
   removeItem,
+  saveCartIds,
+  saveInvoiceShare,
   saveSellKey,
   sendInvoiceWebhook,
+  takePendingAdd,
   updateOrder,
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
@@ -31,28 +40,39 @@ function rememberOpenInvoice(invoice: string) {
 }
 
 function takeRememberedInvoice() {
-  const fromUrl = (new URLSearchParams(window.location.search).get("fattura") || "").trim();
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = (params.get("fattura") || "").trim();
   const saved = (sessionStorage.getItem(OPEN_INVOICE_KEY) || "").trim();
-  return fromUrl || saved;
+  const shareRaw = (params.get("s") || "").trim();
+  if (shareRaw) {
+    const share = decodeInvoiceShare(shareRaw);
+    if (share) saveInvoiceShare(share);
+    return fromUrl || share?.invoice || saved;
+  }
+  return fromUrl || loadInvoiceShare()?.invoice || saved;
 }
 
 function clearOpenInvoice() {
   sessionStorage.removeItem(OPEN_INVOICE_KEY);
+  clearInvoiceShare();
   const url = new URL(window.location.href);
-  if (url.searchParams.has("fattura")) {
+  if (url.searchParams.has("fattura") || url.searchParams.has("s")) {
     url.searchParams.delete("fattura");
+    url.searchParams.delete("s");
     window.history.replaceState({}, "", url);
   }
 }
 
-function putFatturaInUrl(invoice: string) {
+function putFatturaInUrl(order: Order) {
   const url = new URL(window.location.href);
-  url.searchParams.set("fattura", invoice);
+  url.searchParams.set("fattura", order.invoice);
+  url.searchParams.set("s", encodeInvoiceShare(order));
   url.searchParams.delete("login");
   url.searchParams.delete("code");
   url.searchParams.delete("state");
   window.history.replaceState({}, "", url);
-  rememberOpenInvoice(invoice);
+  rememberOpenInvoice(order.invoice);
+  saveInvoiceShare(order);
 }
 
 function InvoiceView({
@@ -95,7 +115,10 @@ function InvoiceView({
           type="button"
           className="btn btn-ghost"
           onClick={() =>
-            void copy(`${siteOriginPath()}?fattura=${encodeURIComponent(order.invoice)}`, "l")
+            void copy(
+              `${siteOriginPath()}?fattura=${encodeURIComponent(order.invoice)}&s=${encodeURIComponent(encodeInvoiceShare(order))}`,
+              "l",
+            )
           }
         >
           {copied === "l" ? "Link copiato" : "Copia link"}
@@ -163,6 +186,7 @@ export default function App() {
     if (fromUrl) saveSellKey(fromUrl);
     return fromUrl || loadSellKey();
   });
+  const cartReady = useRef(false);
   const canManage = Boolean(sellKey) && window.location.protocol !== "https:";
 
   useEffect(() => {
@@ -182,9 +206,26 @@ export default function App() {
       }
     });
     fetchItems()
-      .then((d) => setItems(d.items))
-      .catch(() => setItems([]));
+      .then((d) => {
+        setItems(d.items);
+        const pending = takePendingAdd();
+        const wanted = new Set(loadCartIds());
+        if (pending) wanted.add(pending);
+        const restored = d.items.filter((item) => wanted.has(item.id));
+        cartReady.current = true;
+        setCart(restored);
+        if (pending && restored.some((item) => item.id === pending)) setCartOpen(true);
+      })
+      .catch(() => {
+        cartReady.current = true;
+        setItems([]);
+      });
   }, []);
+
+  useEffect(() => {
+    if (!cartReady.current) return;
+    saveCartIds(cart.map((item) => item.id));
+  }, [cart]);
 
   useEffect(() => {
     setOrders(user ? loadOrders(user.id) : []);
@@ -213,6 +254,7 @@ export default function App() {
 
   function add(item: ShopItem) {
     if (!user) {
+      rememberPendingAdd(item.id);
       goLogin();
       return;
     }
@@ -239,7 +281,19 @@ export default function App() {
 
   function openInvoiceForUser(buyer: DiscordUser, wanted: string) {
     const code = wanted.trim().toUpperCase();
-    const found = loadOrders(buyer.id).find((entry) => entry.invoice.toUpperCase() === code);
+    const shareRaw = (new URLSearchParams(window.location.search).get("s") || "").trim();
+    const shared =
+      (shareRaw ? decodeInvoiceShare(shareRaw) : null) || loadInvoiceShare();
+    let found = loadOrders(buyer.id).find((entry) => entry.invoice.toUpperCase() === code);
+    if (
+      !found &&
+      shared &&
+      shared.invoice.toUpperCase() === code &&
+      shared.buyerDiscordId === buyer.id
+    ) {
+      found = shared;
+      updateOrder(buyer, found);
+    }
     if (!found || found.buyerDiscordId !== buyer.id) {
       setOrder(null);
       setCheckingOut(true);
@@ -249,7 +303,7 @@ export default function App() {
     setError("");
     setOrder(found);
     setCheckingOut(true);
-    putFatturaInUrl(found.invoice);
+    putFatturaInUrl(found);
   }
 
   async function issueInvoice() {
@@ -284,7 +338,7 @@ export default function App() {
       setOrder(invoiced);
       setOrders(loadOrders(user.id));
       setCart([]);
-      putFatturaInUrl(invoiced.invoice);
+      putFatturaInUrl(invoiced);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossibile creare la fattura");
     } finally {
