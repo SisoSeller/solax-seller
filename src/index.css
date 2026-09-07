@@ -965,10 +965,60 @@ a {
   line-height: 1.45;
 }
 
-.pay-slot-label {
-  margin: 2px 0 6px;
+.pay-choice {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.pay-panel {
+  margin-top: 18px;
+  text-align: left;
+}
+
+.pay-panel-kicker {
   color: var(--muted);
   font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.pay-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.pay-tabs button {
+  background: #0d0b12;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 12px;
+  padding: 10px 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.pay-tabs button.on {
+  border-color: var(--gold);
+  color: var(--text);
+  background: #1a1624;
+}
+
+.paypal-card-slot {
+  min-height: 45px;
+}
+
+.robux-price {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.invoice-sheet .pay-panel .paypal-hosted-btn {
+  width: 100%;
 }
 
 .pay-box h3 {

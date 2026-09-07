@@ -93,17 +93,18 @@ function sdkSrc(clientId: string) {
     currency: "EUR",
     intent: "capture",
     components: "buttons",
-    "enable-funding": "paypal",
-    "disable-funding": "card,credit,paylater,venmo",
+    "enable-funding": "paypal,card",
+    "disable-funding": "credit,paylater,venmo",
   });
   return `https://www.paypal.com/sdk/js?${params.toString()}`;
 }
 
 export function loadPaypalSdk(clientId: string) {
-  if (window.paypal) return Promise.resolve();
-  document.querySelectorAll<HTMLScriptElement>("script[data-sx-paypal]").forEach((script) => {
-    if (!window.paypal) script.remove();
-  });
+  const src = sdkSrc(clientId);
+  const existing = document.querySelector<HTMLScriptElement>("script[data-sx-paypal]");
+  if (window.paypal && existing?.src === src) return Promise.resolve();
+  existing?.remove();
+  window.paypal = undefined;
   return new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = sdkSrc(clientId);
@@ -188,6 +189,7 @@ export function startPaypalHostedCheckout(opts: {
   itemName: string;
   returnUrl: string;
   cancelUrl: string;
+  landing?: "Login" | "Billing";
 }) {
   const form = document.createElement("form");
   form.method = "POST";
@@ -210,7 +212,7 @@ export function startPaypalHostedCheckout(opts: {
     rm: "1",
     charset: "utf-8",
     lc: "IT",
-    landing_page: "Login",
+    landing_page: opts.landing || "Login",
     paymentaction: "sale",
   };
   for (const [name, value] of Object.entries(fields)) {

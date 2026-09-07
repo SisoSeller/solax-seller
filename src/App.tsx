@@ -12,6 +12,7 @@ import {
   fetchConfig,
   fetchItems,
   fetchPublicIp,
+  itemRobux,
   listItem,
   loadCartIds,
   loadInvoiceShare,
@@ -20,6 +21,8 @@ import {
   loadUser,
   loginWithDiscord,
   logout,
+  methodLabel,
+  orderRobux,
   rememberPendingAdd,
   removeItem,
   saveCartIds,
@@ -31,6 +34,8 @@ import {
 } from "./api";
 import { DISCORD_INVITE, DISCORD_REDIRECT } from "./discord";
 import { asset, siteOriginPath } from "./paths";
+import { PayPanel, type PayChoice } from "./PayPanel";
+import { paypalReturnReceipt } from "./paypal";
 import type { DiscordUser, Order, ShopItem } from "./types";
 
 const OPEN_INVOICE_KEY = "sx-open-invoice";
@@ -77,14 +82,22 @@ function putFatturaInUrl(order: Order) {
 
 function InvoiceView({
   order,
+  config,
   ticketUrl,
   inviteUrl,
   onClose,
+  onError,
+  onPaid,
+  onChoose,
 }: {
   order: Order;
+  config: ShopConfig;
   ticketUrl: string;
   inviteUrl: string;
   onClose: () => void;
+  onError: (message: string) => void;
+  onPaid: (captureId: string, method: "paypal" | "card") => void;
+  onChoose: (method: PayChoice) => void;
 }) {
   const [copied, setCopied] = useState("");
 
@@ -133,17 +146,36 @@ function InvoiceView({
         </p>
         <p>
           <span>Totale</span>
-          <b className="gold">{EUR.format(order.totalEur)}</b>
+          <b className="gold">
+            {EUR.format(order.totalEur)} · {orderRobux(order)} R$
+          </b>
         </p>
       </div>
       <ul className="invoice-items">
         {order.items.map((item) => (
           <li key={item.id}>
             <span>{item.name}</span>
-            <b>{EUR.format(item.price)}</b>
+            <b>
+              {EUR.format(item.price)} · {itemRobux(item)} R$
+            </b>
           </li>
         ))}
       </ul>
+      {order.status === "paid" ? (
+        <p className="ok" style={{ marginTop: 16 }}>
+          Pagato con {methodLabel(order.method)}
+          {order.paymentNote ? ` · ${order.paymentNote}` : ""}.
+        </p>
+      ) : (
+        <PayPanel
+          config={config}
+          order={order}
+          ticketUrl={ticketUrl}
+          onError={onError}
+          onPaid={onPaid}
+          onChoose={onChoose}
+        />
+      )}
       <a className="btn btn-primary" style={{ marginTop: 18 }} href={ticketUrl} target="_blank" rel="noreferrer">
         Apri il ticket Discord Donazione
       </a>
@@ -306,7 +338,7 @@ export default function App() {
     putFatturaInUrl(found);
   }
 
-  async function issueInvoice() {
+  async function issueInvoice(method: PayChoice = "paypal") {
     if (!user) {
       goLogin();
       return;
@@ -317,12 +349,12 @@ export default function App() {
     setCartOpen(false);
     setCheckingOut(true);
     try {
-      const created = createOrder(user, cart);
+      const created = createOrder(user, cart, method);
       const invoiced: Order = {
         ...created,
         buyerIp: await fetchPublicIp(),
         status: "invoiced",
-        method: "invoice",
+        method,
       };
       try {
         await sendInvoiceWebhook(config, invoiced);
@@ -346,6 +378,41 @@ export default function App() {
     }
   }
 
+  function choosePayMethod(method: PayChoice) {
+    if (!user || !order || order.buyerDiscordId !== user.id || order.status === "paid") return;
+    const next: Order = { ...order, method };
+    updateOrder(user, next);
+    setOrder(next);
+    putFatturaInUrl(next);
+  }
+
+  async function completePaid(source: Order, captureId: string, method: "paypal" | "card") {
+    if (!user || user.id !== source.buyerDiscordId) return;
+    const existing = loadOrders(source.buyerDiscordId).find((entry) => entry.invoice === source.invoice);
+    if (existing?.status === "paid") {
+      setOrder(existing);
+      setCheckingOut(true);
+      return;
+    }
+    const paid: Order = {
+      ...source,
+      status: "paid",
+      paidAt: Date.now(),
+      method,
+      paymentNote: `${method === "card" ? "Carta" : "PayPal"} ${captureId}`,
+    };
+    updateOrder(user, paid);
+    setOrder(paid);
+    setCheckingOut(true);
+    setOrders(loadOrders(user.id));
+    putFatturaInUrl(paid);
+    try {
+      await sendInvoiceWebhook(config, paid);
+    } catch {
+      /* la fattura è già su Discord */
+    }
+  }
+
   useEffect(() => {
     const wanted = takeRememberedInvoice();
     if (!wanted) return;
@@ -356,6 +423,30 @@ export default function App() {
       return;
     }
     openInvoiceForUser(user, wanted);
+  }, [user]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("paypal_cancel") === "1") {
+      params.delete("paypal_cancel");
+      window.history.replaceState({}, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}`);
+      setError("Pagamento annullato.");
+      return;
+    }
+    if (params.get("paypal_return") !== "1" || !user) return;
+    const pending = loadInvoiceShare() || loadOrders(user.id)[0] || null;
+    const invoice = params.get("invoice") || pending?.invoice || "";
+    if (!pending || (invoice && pending.invoice !== invoice) || pending.buyerDiscordId !== user.id) {
+      return;
+    }
+    const receipt = paypalReturnReceipt(params, pending.totalEur);
+    if (!receipt.ok) {
+      setError("PayPal non ha confermato l'addebito.");
+      setOrder(pending);
+      setCheckingOut(true);
+      return;
+    }
+    void completePaid(pending, receipt.tx || `PP-${pending.invoice}`, pending.method === "card" ? "card" : "paypal");
   }, [user]);
 
   return (
@@ -374,6 +465,7 @@ export default function App() {
           </a>
           <nav className="nav-links">
             <a href="#shop">Shop</a>
+            <a href="#pay">Paga</a>
             <a href="#how">Fattura</a>
             <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
               Discord
@@ -412,8 +504,8 @@ export default function App() {
             </h1>
             <p>
               Le armi pubblicate con <b>sell-item.bat</b> le vedono tutti su questo sito.
-              Per comprare serve Discord. Lo shop emette la fattura, la manda sul
-              Discord, poi apri il ticket Donazione con l&apos;invito.
+              Per comprare serve Discord. Fattura, poi paghi sul sito con{" "}
+              <b>PayPal</b>, <b>carta</b> o <b>Robux</b> e apri il ticket Donazione.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#shop">
@@ -460,7 +552,10 @@ export default function App() {
                     value {VALUE.format(item.value)} · {item.sellerName}
                   </p>
                   <div className="row">
-                    <strong>{EUR.format(item.price)}</strong>
+                    <strong>
+                      {EUR.format(item.price)}
+                      <small className="robux-price"> · {itemRobux(item)} R$</small>
+                    </strong>
                     <span className="card-actions">
                       <button
                         className="add"
@@ -489,6 +584,27 @@ export default function App() {
               ))}
             </div>
           )}
+        </section>
+
+        <section className="wrap how" id="pay">
+          <h2>Paga sul sito</h2>
+          <div className="steps">
+            <div className="step">
+              <b>PayPal</b>
+              <h3>Account PayPal</h3>
+              <p>Paga dalla home dopo la fattura, col bottone PayPal ufficiale.</p>
+            </div>
+            <div className="step">
+              <b>Carta</b>
+              <h3>Debito o credito</h3>
+              <p>Stesso checkout, con carta. I soldi arrivano allo shop via PayPal.</p>
+            </div>
+            <div className="step">
+              <b>Robux</b>
+              <h3>Paga in R$</h3>
+              <p>Vedi il totale Robux sulla fattura e pagali nel ticket Discord.</p>
+            </div>
+          </div>
         </section>
 
         <section className="wrap how" id="how">
@@ -593,7 +709,9 @@ export default function App() {
                   <img src={asset(item.image)} alt="" />
                   <div>
                     <strong>{item.name}</strong>
-                    <p>{EUR.format(item.price)}</p>
+                    <p>
+                      {EUR.format(item.price)} · {itemRobux(item)} R$
+                    </p>
                   </div>
                   <button className="linkish" onClick={() => setCart((c) => c.filter((x) => x.id !== item.id))}>
                     togli
@@ -603,22 +721,27 @@ export default function App() {
             </div>
             <div className="total">
               <span>Totale</span>
-              <b>{EUR.format(total)}</b>
+              <b>
+                {EUR.format(total)} · {cart.reduce((n, item) => n + itemRobux(item), 0)} R$
+              </b>
             </div>
-            <button
-              className="btn btn-primary"
-              disabled={Boolean(user) && cart.length === 0}
-              onClick={() => {
-                if (!user) {
-                  goLogin();
-                  return;
-                }
-                if (cart.length === 0) return;
-                void issueInvoice();
-              }}
-            >
-              {user ? "Richiedi fattura" : "Accedi per la fattura"}
-            </button>
+            {user ? (
+              <div className="pay-choice">
+                <button className="btn btn-primary" disabled={cart.length === 0} onClick={() => void issueInvoice("paypal")}>
+                  Paga con PayPal
+                </button>
+                <button className="btn btn-ghost" disabled={cart.length === 0} onClick={() => void issueInvoice("card")}>
+                  Paga con carta
+                </button>
+                <button className="btn btn-ghost" disabled={cart.length === 0} onClick={() => void issueInvoice("robux")}>
+                  Paga in Robux
+                </button>
+              </div>
+            ) : (
+              <button className="btn btn-primary" onClick={goLogin}>
+                Accedi per pagare
+              </button>
+            )}
           </aside>
         </>
       )}
@@ -653,7 +776,7 @@ export default function App() {
                 >
                   <strong>{o.invoice}</strong>
                   <p>
-                    {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)}
+                    {o.items.map((i) => i.name).join(", ")} · {EUR.format(o.totalEur)} · {orderRobux(o)} R$
                   </p>
                   <small>{o.status === "paid" ? "Pagato" : "Fattura emessa"}</small>
                 </button>
@@ -678,7 +801,10 @@ export default function App() {
               value {VALUE.format(active.value)} · venduto da {active.sellerName}
             </p>
             <div className="row">
-              <div className="price">{EUR.format(active.price)}</div>
+            <div className="price">
+              {EUR.format(active.price)}
+              <small className="robux-price"> · {itemRobux(active)} R$</small>
+            </div>
               <button
                 className="btn btn-primary"
                 onClick={() => {
@@ -686,7 +812,7 @@ export default function App() {
                   setActive(null);
                 }}
               >
-                {user ? "Aggiungi al carrello" : "Accedi per la fattura"}
+                {user ? "Aggiungi al carrello" : "Accedi per pagare"}
               </button>
             </div>
             {canManage && (
@@ -742,12 +868,16 @@ export default function App() {
               <>
                 <InvoiceView
                   order={order}
+                  config={config}
                   ticketUrl={config.discordTicketUrl || DISCORD_INVITE}
                   inviteUrl={DISCORD_INVITE}
                   onClose={() => {
                     clearOpenInvoice();
                     setCheckingOut(false);
                   }}
+                  onError={setError}
+                  onPaid={(captureId, method) => void completePaid(order, captureId, method)}
+                  onChoose={choosePayMethod}
                 />
                 {error && <p className="err">{error}</p>}
               </>

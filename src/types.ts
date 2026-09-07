@@ -34,7 +34,7 @@ export type Order = {
   invoice: string;
   buyerDiscordId: string;
   buyerUsername: string;
-  method: "paypal" | "robux" | "invoice";
+  method: "paypal" | "robux" | "invoice" | "card";
   hasPlus: boolean;
   status: "awaiting_payment" | "paid" | "invoiced";
   totalEur: number;

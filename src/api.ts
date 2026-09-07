@@ -252,6 +252,7 @@ export function encodeInvoiceShare(order: Order) {
     buyerDiscordId: order.buyerDiscordId,
     buyerUsername: order.buyerUsername,
     totalEur: order.totalEur,
+    totalRobux: order.totalRobux,
     createdAt: order.createdAt,
     status: order.status,
     method: order.method,
@@ -285,11 +286,18 @@ export function decodeInvoiceShare(raw: string): Order | null {
       invoice: String(parsed.invoice),
       buyerDiscordId: String(parsed.buyerDiscordId),
       buyerUsername: String(parsed.buyerUsername || ""),
-      method: parsed.method === "robux" ? "robux" : parsed.method === "paypal" ? "paypal" : "invoice",
+      method:
+        parsed.method === "robux"
+          ? "robux"
+          : parsed.method === "paypal"
+            ? "paypal"
+            : parsed.method === "card"
+              ? "card"
+              : "invoice",
       hasPlus: false,
       status: parsed.status === "paid" ? "paid" : "invoiced",
       totalEur: Number(parsed.totalEur) || 0,
-      totalRobux: 0,
+      totalRobux: Number(parsed.totalRobux) || 0,
       items: parsed.items,
       createdAt: Number(parsed.createdAt) || Date.now(),
     };
@@ -298,17 +306,37 @@ export function decodeInvoiceShare(raw: string): Order | null {
   }
 }
 
-export function createOrder(user: DiscordUser, items: ShopItem[]): Order {
+export function methodLabel(method: Order["method"]) {
+  if (method === "card") return "Carta";
+  if (method === "robux") return "Robux";
+  if (method === "paypal") return "PayPal";
+  return "Da scegliere";
+}
+
+export function itemRobux(item: { robuxPrice: number; price: number }) {
+  return item.robuxPrice > 0 ? item.robuxPrice : Math.round(item.price * 80);
+}
+
+export function orderRobux(order: Order) {
+  if (order.totalRobux > 0) return order.totalRobux;
+  return order.items.reduce((n, item) => n + itemRobux(item), 0);
+}
+
+export function createOrder(
+  user: DiscordUser,
+  items: ShopItem[],
+  method: Order["method"] = "invoice",
+): Order {
   const invoice = `SLX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
   const order: Order = {
     invoice,
     buyerDiscordId: user.id,
     buyerUsername: user.username,
-    method: "invoice",
+    method,
     hasPlus: false,
     status: "invoiced",
     totalEur: items.reduce((n, item) => n + item.price, 0),
-    totalRobux: 0,
+    totalRobux: items.reduce((n, item) => n + itemRobux(item), 0),
     items: items.map((item) => ({
       id: item.id,
       name: item.name,
@@ -335,8 +363,10 @@ export function updateOrder(user: DiscordUser, order: Order) {
 export async function sendInvoiceWebhook(config: ShopConfig, order: Order) {
   if (!config.discordWebhookUrl) throw new Error("Webhook Discord non configurato");
   const invite = config.discordTicketUrl || "https://discord.gg/zq3fR5MxgU";
+  const paid = order.status === "paid";
+  const robux = orderRobux(order);
   const items = order.items
-    .map((item) => `• ${item.name} — ${EUR.format(item.price)}`)
+    .map((item) => `• ${item.name} — ${EUR.format(item.price)} / ${itemRobux(item)} R$`)
     .join("\n");
   const account = [
     order.buyerUsername,
@@ -345,18 +375,25 @@ export async function sendInvoiceWebhook(config: ShopConfig, order: Order) {
   ].join("\n");
   const payload = {
     username: "SX Fatture",
-    content: `Fattura **${order.invoice}** · ${order.buyerUsername} (<@${order.buyerDiscordId}>)`,
+    content: paid
+      ? `PAGATO **${order.invoice}** · ${methodLabel(order.method)} · ${order.buyerUsername} (<@${order.buyerDiscordId}>)`
+      : `Fattura **${order.invoice}** · ${order.buyerUsername} (<@${order.buyerDiscordId}>)`,
     allowed_mentions: { users: [String(order.buyerDiscordId)] },
     embeds: [
       {
-        title: `Fattura ${order.invoice}`,
-        color: 0x7b4dff,
+        title: paid ? `Pagato ${order.invoice}` : `Fattura ${order.invoice}`,
+        color: paid ? 0x22c55e : 0x7b4dff,
         fields: [
           { name: "Account Discord", value: account.slice(0, 1024), inline: false },
           { name: "IP del PC", value: (order.buyerIp || "sconosciuto").slice(0, 256), inline: true },
           { name: "Numero fattura", value: `\`${order.invoice}\``, inline: true },
+          { name: "Metodo", value: methodLabel(order.method), inline: true },
           { name: "Item e prezzo", value: (items || "—").slice(0, 1024), inline: false },
-          { name: "Totale", value: EUR.format(order.totalEur), inline: true },
+          { name: "Totale euro", value: EUR.format(order.totalEur), inline: true },
+          { name: "Totale Robux", value: `${robux} R$`, inline: true },
+          ...(order.paymentNote
+            ? [{ name: "Pagamento", value: order.paymentNote.slice(0, 1024), inline: false }]
+            : []),
           { name: "Ticket / invito", value: invite.slice(0, 1024), inline: false },
         ],
         timestamp: new Date().toISOString(),

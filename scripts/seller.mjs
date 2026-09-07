@@ -110,7 +110,7 @@ app.post("/publish", upload.single("photo"), (req, res) => {
     const value = Number(req.body.value);
     const paypal = String(req.body.paypal || "").trim();
     const roblox = "";
-    const robuxPrice = 0;
+    const robuxPrice = Math.round(price * 80);
     if (!name || !Number.isFinite(price) || price <= 0) {
       res.status(400).json({ error: "Nome e prezzo obbligatori" });
       return;
@@ -134,7 +134,7 @@ app.post("/publish", upload.single("photo"), (req, res) => {
       image: `listings/${filename}`,
       paypal,
       roblox,
-      robuxPrice: 0,
+      robuxPrice,
       sellerDiscordId: String(req.body.sellerDiscordId || ""),
       sellerName: String(req.body.sellerName || "seller"),
       sold: false,
